@@ -5,7 +5,8 @@
   "main": "background.js",
   "scripts": {
     "build": "echo 'No build process required for Chrome extension'",
-    "package": "zip -r fluf-chrome-extension-v1.0.3.zip . -x '*.git*' 'node_modules/*' '*.DS_Store'",
+    "package": "./scripts/build-release.sh",
+    "release": "./scripts/build-release.sh",
     "test": "echo 'No tests specified'",
     "lint": "echo 'No linter configured'"
   },

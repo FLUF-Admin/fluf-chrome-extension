@@ -9,6 +9,7 @@ dist/
 build/
 *.zip
 *.crx
+releases/
 
 # IDE and editor files
 .vscode/
