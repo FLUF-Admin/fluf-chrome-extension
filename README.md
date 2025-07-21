@@ -21,7 +21,7 @@ A Chrome extension that automatically extracts authentication tokens from multip
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/your-username/fluf-chrome-extension.git
+   git clone https://github.com/FLUF-Admin/fluf-chrome-extension.git
    cd fluf-chrome-extension
    ```
 
@@ -35,7 +35,7 @@ A Chrome extension that automatically extracts authentication tokens from multip
 
 ### Production Installation
 
-1. Download the latest release from the [Releases page](https://github.com/your-username/fluf-chrome-extension/releases)
+1. Download the latest release from the [Releases page](https://github.com/FLUF-Admin/fluf-chrome-extension/releases)
 2. Extract the ZIP file
 3. Follow the same steps as development installation
 
@@ -135,6 +135,11 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 For support and questions:
 - Create an issue in this repository
 - Contact the FLUF development team
+
+## Repository
+
+- **GitHub**: https://github.com/FLUF-Admin/fluf-chrome-extension
+- **Issues**: https://github.com/FLUF-Admin/fluf-chrome-extension/issues
 
 ## Changelog
 
