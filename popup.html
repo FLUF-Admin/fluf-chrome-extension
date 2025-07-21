@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>FLUF Utility Extension</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            width: 300px;
+            padding: 15px;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .status-box {
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+        .success {
+            background-color: #e8f5e9;
+            color: #2e7d32;
+        }
+        .error {
+            background-color: #ffebee;
+            color: #c62828;
+        }
+        .neutral {
+            background-color: #e3f2fd;
+            color: #1565c0;
+        }
+        button {
+            background-color: black;
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #333;
+        }
+        .privacy-note {
+            font-size: 12px;
+            margin-top: 15px;
+            color: #757575;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>FLUF Utility Extension</h2>
+        
+        <button id="checkNow">Check Now</button>
+        <div id="status" class="status-box neutral">Loading status...</div>
+
+        <div class="privacy-note">
+            <p><strong>Privacy Information:</strong> This extension collects your authentication information to enable remote functionality.</p>
+            <p>The extension runs in the background once per hour to maintain your connection. Passwords are NOT read or managed by the extension.</p>
+        </div>
+    </div>
+    <script src="popup.js"></script>
+</body>
+</html>

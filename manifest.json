@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "FLUF Utility Extension",
+  "version": "1.0.3",
+  "permissions": [
+    "alarms",
+    "storage",
+    "scripting",
+    "tabs",
+    "cookies",
+    "webRequest"
+  ],
+  "host_permissions": [
+    "https://fluf.io/*",
+    "https://www.depop.com/*",
+    "https://depop.com/*",
+    "https://www.vinted.co.uk/*",
+    "https://vinted.co.uk/*",
+    "https://www.vinted.com/*",
+    "https://vinted.com/*",
+    "http://localhost:10006/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://fluf.io/*",
+        "https://www.depop.com/*",
+        "https://depop.com/*",
+        "https://www.vinted.co.uk/*",
+        "https://vinted.co.uk/*",
+        "https://www.vinted.com/*",
+        "https://vinted.com/*",
+        "http://localhost:10006/*"
+      ],
+      "all_frames": true,
+      "js": [
+        "content.js"
+      ]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "name": "fluf-chrome-extension",
+  "version": "1.0.3",
+  "description": "Chrome extension for FLUF platform authentication token extraction from marketplace platforms",
+  "main": "background.js",
+  "scripts": {
+    "build": "echo 'No build process required for Chrome extension'",
+    "package": "zip -r fluf-chrome-extension-v1.0.3.zip . -x '*.git*' 'node_modules/*' '*.DS_Store'",
+    "test": "echo 'No tests specified'",
+    "lint": "echo 'No linter configured'"
+  },
+  "keywords": [
+    "chrome-extension",
+    "fluf",
+    "marketplace",
+    "authentication",
+    "depop",
+    "vinted",
+    "token-extraction"
+  ],
+  "author": "FLUF Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/fluf-chrome-extension.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-username/fluf-chrome-extension/issues"
+  },
+  "homepage": "https://github.com/your-username/fluf-chrome-extension#readme",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "devDependencies": {},
+  "dependencies": {}
+} 
