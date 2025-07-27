@@ -10,11 +10,22 @@ chrome.runtime.onInstalled.addListener((details) => {
   
   // Set up separate alarms for each platform
   chrome.alarms.create("FCU_checkDepop", { periodInMinutes: 360 }); // Every 6 hours
-  chrome.alarms.create("FCU_checkVinted", { periodInMinutes: 60 }); // Every hour
+  chrome.alarms.create("FCU_checkVinted", { periodInMinutes: 30 }); // Every 30 minutes
 
   // Run once on installation for both platforms
   getTokenViaContentScript();
 });
+
+// Direct extraction functions for scheduled checks
+async function getDepopTokensDirectly() {
+  console.log('🔄 SCHEDULED DEPOP CHECK');
+  return await getDepopTokensViaContentScript();
+}
+
+async function getVintedTokensDirectly() {
+  console.log('🔄 SCHEDULED VINTED CHECK');  
+  return await getVintedTokensViaContentScript();
+}
 
 // Listen for the alarms to trigger
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -153,9 +164,19 @@ async function getVintedCSRFFromItemsNewWithCookies(cookieHeader) {
       const csrfToken = match ? match[1] : null;
       const anonId = response.headers.get('x-anon-id');
       
+      // Extract Vinted username from figure img alt attribute
+      let vintedUsername = null;
+      const usernameMatch = html.match(/<figure[^>]*>\s*<img[^>]*alt="([^"]+)"[^>]*>/);
+      if (usernameMatch) {
+        vintedUsername = usernameMatch[1];
+        console.log('✅ Vinted username extracted:', vintedUsername);
+      } else {
+        console.log('❌ Vinted username not found in HTML');
+      }
+      
       if (csrfToken) {
         console.log('✅ CSRF token extracted successfully');
-        return { csrfToken, anonId };
+        return { csrfToken, anonId, vintedUsername };
       } else {
         console.log('❌ CSRF token not found in HTML response');
         
@@ -163,7 +184,7 @@ async function getVintedCSRFFromItemsNewWithCookies(cookieHeader) {
         const altMatch = html.match(/CSRF_TOKEN["\s]*:["\s]*"([^"]+)"/);
         if (altMatch) {
           console.log('✅ Found CSRF token with alternative pattern');
-          return { csrfToken: altMatch[1], anonId };
+          return { csrfToken: altMatch[1], anonId, vintedUsername };
         }
       }
     } else if (response.status === 307 || response.status === 401) {
@@ -182,7 +203,7 @@ async function getVintedCSRFFromItemsNewWithCookies(cookieHeader) {
 }
 
 // Function to extract Vinted tokens
-async function getVintedTokensViaContentScript() {
+async function getVintedTokensViaContentScript(userIdentifier = "") {
   console.group('🟣 VINTED TOKEN EXTRACTION');
   
   try {
@@ -230,10 +251,11 @@ async function getVintedTokensViaContentScript() {
         fullCookies: cookieString,
         userId: userId,
         csrfToken: csrfResult.csrfToken,
-        anonId: csrfResult.anonId
+        anonId: csrfResult.anonId,
+        vintedUsername: csrfResult.vintedUsername
       };
       
-      sendTokenToAPI(extractedData, "https://www.vinted.co.uk", "", null);
+      sendTokenToAPI(extractedData, "https://www.vinted.co.uk", userIdentifier, null);
       console.groupEnd();
       return { success: true, message: 'Tokens found and sent to API' };
     } else {
@@ -245,12 +267,14 @@ async function getVintedTokensViaContentScript() {
         url: ["*://*.vinted.co.uk/*", "*://vinted.co.uk/*", "*://*.vinted.com/*", "*://vinted.com/*"] 
       });
       
+      let createdNewTab = false;
       if (vintedTab.length === 0) {
         console.log('📱 Creating new Vinted tab...');
         vintedTab = await chrome.tabs.create({ 
           url: 'https://www.vinted.co.uk',
           active: false // Open in background
         });
+        createdNewTab = true;
         
         // Wait for page to load
         await new Promise(resolve => {
@@ -310,6 +334,18 @@ async function getVintedTokensViaContentScript() {
             }
           }
           
+          // Try to extract Vinted username from figure img alt attribute on items/new page
+          let vintedUsername = null;
+          if (window.location.pathname === '/items/new') {
+            const figureImg = document.querySelector('figure img');
+            if (figureImg && figureImg.alt) {
+              vintedUsername = figureImg.alt;
+              console.log('✅ Vinted username extracted from page:', vintedUsername);
+            } else {
+              console.log('❌ Vinted username not found on items/new page');
+            }
+          }
+          
           return {
             success: !!(allCookies && allCookies.length > 0),
             allCookies: allCookies,
@@ -319,6 +355,7 @@ async function getVintedTokensViaContentScript() {
             anonId: anonId,
             vSid: vSid,
             userId: userId,
+            vintedUsername: vintedUsername,
             sourceUrl: window.location.href
           };
         }
@@ -334,19 +371,41 @@ async function getVintedTokensViaContentScript() {
             fullCookies: result.allCookies,
             userId: result.userId,
             csrfToken: null, // CSRF extraction failed, so we don't have it
-            anonId: result.anonId
+            anonId: result.anonId,
+            vintedUsername: result.vintedUsername
           };
           
-          sendTokenToAPI(extractedData, result.sourceUrl, "", null);
+          sendTokenToAPI(extractedData, result.sourceUrl, userIdentifier, null);
+          
+          // Close tab if we created it
+          if (createdNewTab && vintedTab[0]) {
+            console.log('🗂️ Closing Vinted tab that was created for token extraction');
+            chrome.tabs.remove(vintedTab[0].id);
+          }
+          
           console.groupEnd();
           return { success: true, message: 'Tokens found and sent to API' };
         } else {
           console.log('❌ VINTED FAIL: No cookies found in content script');
+          
+          // Close tab if we created it and failed
+          if (createdNewTab && vintedTab[0]) {
+            console.log('🗂️ Closing Vinted tab that was created (extraction failed)');
+            chrome.tabs.remove(vintedTab[0].id);
+          }
+          
           console.groupEnd();
           return { success: false, message: 'No cookies found' };
         }
       } else {
         console.log('❌ VINTED FAIL: Content script injection failed');
+        
+        // Close tab if we created it and failed
+        if (createdNewTab && vintedTab[0]) {
+          console.log('🗂️ Closing Vinted tab that was created (injection failed)');
+          chrome.tabs.remove(vintedTab[0].id);
+        }
+        
         console.groupEnd();
         return { success: false, message: 'Content script injection failed' };
       }
@@ -360,7 +419,7 @@ async function getVintedTokensViaContentScript() {
 }
 
 // Function to extract Depop tokens using content script from opened tab
-async function getDepopTokensViaContentScript() {
+async function getDepopTokensViaContentScript(userIdentifier = "") {
   console.group('🟡 DEPOP TOKEN EXTRACTION');
   
   try {
@@ -369,12 +428,14 @@ async function getDepopTokensViaContentScript() {
       url: ["*://*.depop.com/*", "*://depop.com/*"] 
     });
     
+    let createdNewDepopTab = false;
     if (depopTab.length === 0) {
       console.log('📱 Creating new Depop tab...');
       depopTab = await chrome.tabs.create({ 
         url: 'https://www.depop.com',
         active: false // Open in background
       });
+      createdNewDepopTab = true;
       
       // Wait for page to load
       await new Promise(resolve => {
@@ -433,16 +494,37 @@ async function getDepopTokensViaContentScript() {
           userId: result.userId
         };
         
-        sendTokenToAPI(extractedData, result.sourceUrl, "", null);
+        sendTokenToAPI(extractedData, result.sourceUrl, userIdentifier, null);
+        
+        // Close tab if we created it
+        if (createdNewDepopTab && depopTab[0]) {
+          console.log('🗂️ Closing Depop tab that was created for token extraction');
+          chrome.tabs.remove(depopTab[0].id);
+        }
+        
         console.groupEnd();
         return { success: true, message: 'Tokens found and sent to API' };
       } else {
         console.log('❌ DEPOP FAIL: Missing required tokens');
+        
+        // Close tab if we created it and failed
+        if (createdNewDepopTab && depopTab[0]) {
+          console.log('🗂️ Closing Depop tab that was created (missing tokens)');
+          chrome.tabs.remove(depopTab[0].id);
+        }
+        
         console.groupEnd();
         return { success: false, message: 'Missing required tokens' };
       }
     } else {
       console.log('❌ DEPOP FAIL: Content script injection failed');
+      
+      // Close tab if we created it and failed
+      if (createdNewDepopTab && depopTab[0]) {
+        console.log('🗂️ Closing Depop tab that was created (injection failed)');
+        chrome.tabs.remove(depopTab[0].id);
+      }
+      
       console.groupEnd();
       return { success: false, message: 'Content script injection failed' };
     }
@@ -459,9 +541,9 @@ function getTokenForSinglePlatform(platformName, platformUrl, sourceUrl = "", us
   console.log(`Starting single platform check for ${platformName}`);
   
   if (platformName === 'Vinted') {
-    getVintedTokensViaContentScript();
+    getVintedTokensViaContentScript(userIdentifier);
   } else if (platformName === 'Depop') {
-    getDepopTokensViaContentScript();
+    getDepopTokensViaContentScript(userIdentifier);
   } else {
     console.error(`Unsupported platform: ${platformName}`);
   }
@@ -481,7 +563,7 @@ function getTokenViaContentScript(sourceUrl = "", sendResponse = null, userIdent
 
   // Check Depop
   console.log('🟡 Initiating Depop check...');
-  getDepopTokensViaContentScript().then((result) => {
+  getDepopTokensViaContentScript(userIdentifier).then((result) => {
     if (result && result.success) {
       console.log('✅ Depop check completed successfully');
       allResults.push({ platform: 'Depop', success: true, data: { channel: 'depop' } });
@@ -528,7 +610,7 @@ function getTokenViaContentScript(sourceUrl = "", sendResponse = null, userIdent
 
   // Check Vinted
   console.log('🟣 Initiating Vinted check...');
-  getVintedTokensViaContentScript().then((result) => {
+  getVintedTokensViaContentScript(userIdentifier).then((result) => {
     if (result && result.success) {
       console.log('✅ Vinted check completed successfully');
       allResults.push({ platform: 'Vinted', success: true, data: { channel: 'vinted' } });
@@ -600,7 +682,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 // Function to send the token to the WordPress API using fetch
 function sendTokenToAPI(extractedData, sourceUrl = "", userIdentifier = "", sendResponse = null) {
-  const { accessToken, userId, csrfToken, channel, fullCookies, anonId } = extractedData;
+  const { accessToken, userId, csrfToken, channel, fullCookies, anonId, vintedUsername } = extractedData;
   
   if (!channel) {
     console.log("No channel detected");
@@ -673,6 +755,9 @@ function sendTokenToAPI(extractedData, sourceUrl = "", userIdentifier = "", send
     }
     if (anonId) {
       requestBody.anon_id = anonId;
+    }
+    if (vintedUsername) {
+      requestBody.vinted_username = vintedUsername;
     }
   }
   
