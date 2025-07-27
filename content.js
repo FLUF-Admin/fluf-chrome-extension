@@ -24,21 +24,25 @@ window.addEventListener('message', function(event) {
         
         const userIdentifierFromCookie = getCookie('fc_user_identifier');
         const userIdentifier = userIdentifierFromCookie || payload.userIdentifier || '';
+        const channel = payload.channel || 'depop'; // Default to depop for backward compatibility
         
         console.log('User identifier from cookie:', userIdentifierFromCookie);
         console.log('User identifier from payload:', payload.userIdentifier);
         console.log('Final user identifier:', userIdentifier);
+        console.log('Channel:', channel);
         console.log('Source URL:', payload.sourceUrl);
         
         chrome.runtime.sendMessage({
             action: 'FCU_getTokenViaContentScript',
             sourceUrl: payload.sourceUrl,
-            userIdentifier: userIdentifier
+            userIdentifier: userIdentifier,
+            channel: channel
         }, function(response) {
             window.postMessage({
                 type: 'FCU_DEPOP_AUTH_RESULT',
                 success: response?.success,
-                error: response?.error
+                error: response?.error,
+                channel: channel
             }, '*');
         });
     }

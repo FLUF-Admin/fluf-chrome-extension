@@ -729,7 +729,39 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     console.log("Received getTokenViaContentScript via content.js message");
     console.log("Request data:", request);
 
-    getTokenViaContentScript(request.sourceUrl, sendResponse, request.userIdentifier);
+    const channel = request.channel || 'depop'; // Default to depop for backward compatibility
+    
+    // Route to specific platform based on channel
+    if (channel === 'vinted') {
+      getVintedTokensViaContentScript(request.userIdentifier).then(result => {
+        sendResponse({
+          success: result?.success || false,
+          error: result?.message || result?.error || 'Unknown error',
+          channel: 'vinted'
+        });
+      }).catch(error => {
+        sendResponse({
+          success: false,
+          error: error.message || 'Unknown error',
+          channel: 'vinted'
+        });
+      });
+    } else {
+      // Default to Depop
+      getDepopTokensViaContentScript(request.userIdentifier).then(result => {
+        sendResponse({
+          success: result?.success || false,
+          error: result?.message || result?.error || 'Unknown error',
+          channel: 'depop'
+        });
+      }).catch(error => {
+        sendResponse({
+          success: false,
+          error: error.message || 'Unknown error',
+          channel: 'depop'
+        });
+      });
+    }
 
     return true; // ✅ ✅ ✅ ***CRUCIAL: TELL CHROME YOU WILL SEND RESPONSE LATER***
   }
