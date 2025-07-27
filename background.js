@@ -166,12 +166,67 @@ async function getVintedCSRFFromItemsNewWithCookies(cookieHeader) {
       
       // Extract Vinted username from figure img alt attribute
       let vintedUsername = null;
-      const usernameMatch = html.match(/<figure[^>]*>\s*<img[^>]*alt="([^"]+)"[^>]*>/);
+      
+      // Try multiple patterns to extract the username from HTML
+      // Pattern 1: Look for figure with class "header-avatar" containing img with alt
+      let usernameMatch = html.match(/<figure[^>]*class="[^"]*header-avatar[^"]*"[^>]*>[\s\S]*?<img[^>]*alt="([^"]+)"[^>]*>/i);
+      
+      // Pattern 2: Basic figure img alt attribute  
+      if (!usernameMatch) {
+        usernameMatch = html.match(/<figure[^>]*>\s*<img[^>]*alt="([^"]+)"[^>]*>/i);
+      }
+      
+      // Pattern 3: Look for img with alt inside any figure (more flexible)
+      if (!usernameMatch) {
+        usernameMatch = html.match(/<figure[^>]*>[\s\S]*?<img[^>]*alt="([^"]+)"[^>]*>[\s\S]*?<\/figure>/i);
+      }
+      
+      // Pattern 4: Look for div with header-avatar class containing img
+      if (!usernameMatch) {
+        usernameMatch = html.match(/<div[^>]*class="[^"]*header-avatar[^"]*"[^>]*>[\s\S]*?<img[^>]*alt="([^"]+)"[^>]*>/i);
+      }
+      
+      // Pattern 5: Look for any img with class containing "avatar" or "user"
+      if (!usernameMatch) {
+        usernameMatch = html.match(/<img[^>]*class="[^"]*(?:avatar|user)[^"]*"[^>]*alt="([^"]+)"[^>]*>/i);
+      }
+      
+      // Pattern 6: Look for username in data attributes or specific patterns
+      if (!usernameMatch) {
+        usernameMatch = html.match(/data-username="([^"]+)"/i);
+      }
+      
+      // Pattern 7: Look for any img with alt that looks like a username (no spaces, alphanumeric)
+      if (!usernameMatch) {
+        const allImgMatches = html.match(/<img[^>]*alt="([a-zA-Z0-9_.-]+)"[^>]*/gi);
+        if (allImgMatches) {
+          for (const imgMatch of allImgMatches) {
+            const altMatch = imgMatch.match(/alt="([a-zA-Z0-9_.-]+)"/);
+            if (altMatch && altMatch[1] && altMatch[1].length > 3 && !altMatch[1].includes(' ')) {
+              usernameMatch = altMatch;
+              break;
+            }
+          }
+        }
+      }
+      
       if (usernameMatch) {
         vintedUsername = usernameMatch[1];
         console.log('✅ Vinted username extracted:', vintedUsername);
       } else {
-        console.log('❌ Vinted username not found in HTML');
+        console.log('❌ Vinted username not found in HTML - trying alternative methods...');
+        
+        // Log a sample of the HTML around figure tags for debugging
+        const figureMatch = html.match(/<figure[\s\S]{0,200}>/i);
+        if (figureMatch) {
+          console.log('🔍 Sample figure HTML found:', figureMatch[0]);
+        }
+        
+        // Look for any img tags with alt attributes for debugging
+        const allImgAlts = html.match(/<img[^>]*alt="([^"]+)"[^>]*/gi);
+        if (allImgAlts) {
+          console.log('🔍 All img alt attributes found:', allImgAlts.slice(0, 5)); // Show first 5
+        }
       }
       
       if (csrfToken) {
