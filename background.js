@@ -1,6 +1,8 @@
-// Endpoints - send to both localhost and production
+// Endpoints - send to localhost, local development, and production
 const ENDPOINTS = [
   "http://localhost:10006/wp-json/fc/circular-auth/v1/token",
+  "http://fluf.local/wp-json/fc/circular-auth/v1/token",
+  "https://fluf.local/wp-json/fc/circular-auth/v1/token",
   "https://fluf.io/wp-json/fc/circular-auth/v1/token"
 ];
 

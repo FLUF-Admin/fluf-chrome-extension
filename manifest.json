@@ -12,6 +12,8 @@
   ],
   "host_permissions": [
     "https://fluf.io/*",
+    "http://fluf.local/*",
+    "https://fluf.local/*",
     "https://www.depop.com/*",
     "https://depop.com/*",
     "https://www.vinted.co.uk/*",
@@ -27,6 +29,8 @@
     {
       "matches": [
         "https://fluf.io/*",
+        "http://fluf.local/*",
+        "https://fluf.local/*",
         "https://www.depop.com/*",
         "https://depop.com/*",
         "https://www.vinted.co.uk/*",

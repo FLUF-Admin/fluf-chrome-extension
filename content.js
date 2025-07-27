@@ -16,15 +16,37 @@ window.addEventListener('message', function(event) {
     if (type === 'FCU_TRIGGER_DEPOP_AUTH') {
         // Try to get user identifier from cookie first
         function getCookie(name) {
-            const value = `; ${document.cookie}`;
-            const parts = value.split(`; ${name}=`);
-            if (parts.length === 2) return parts.pop().split(';').shift();
-            return null;
+            try {
+                const value = `; ${document.cookie}`;
+                const parts = value.split(`; ${name}=`);
+                if (parts.length === 2) {
+                    const cookieValue = parts.pop().split(';').shift();
+                    console.log(`Cookie '${name}' found:`, cookieValue ? '[PRESENT]' : '[EMPTY]');
+                    return cookieValue;
+                }
+                console.log(`Cookie '${name}' not found in:`, document.cookie.substring(0, 100) + '...');
+                return null;
+            } catch (error) {
+                console.error('Error reading cookie:', error);
+                return null;
+            }
         }
         
         const userIdentifierFromCookie = getCookie('fc_user_identifier');
         const userIdentifier = userIdentifierFromCookie || payload.userIdentifier || '';
         const channel = payload.channel || 'depop'; // Default to depop for backward compatibility
+        
+        // Validate we're on a FLUF domain for cookie reading
+        const isFlufDomain = window.location.hostname === 'fluf.io' || 
+                            window.location.hostname === 'fluf.local' || 
+                            window.location.hostname === 'localhost';
+        
+        console.log('Current domain:', window.location.hostname);
+        console.log('Is FLUF domain:', isFlufDomain);
+        
+        if (!isFlufDomain && !userIdentifierFromCookie) {
+            console.warn('⚠️ Attempting to read fc_user_identifier cookie from non-FLUF domain. Cookie may not be available.');
+        }
         
         console.log('User identifier from cookie:', userIdentifierFromCookie);
         console.log('User identifier from payload:', payload.userIdentifier);
