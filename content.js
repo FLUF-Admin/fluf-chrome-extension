@@ -1,4 +1,5 @@
 window.addEventListener('message', function(event) {
+    debugger;
     // 🔐 Only accept messages from the same origin
     if (event.origin !== window.location.origin) return;
 
@@ -14,7 +15,7 @@ window.addEventListener('message', function(event) {
     }
 
     if (type === 'FCU_TRIGGER_DEPOP_AUTH') {
-        // Try to get user identifier from cookie first
+        // Try to get user identifier from multiple sources
         function getCookie(name) {
             try {
                 const value = `; ${document.cookie}`;
@@ -32,9 +33,34 @@ window.addEventListener('message', function(event) {
             }
         }
         
+        function getUserIdentifierFromDOM() {
+            // Try to get from hidden DOM element
+            const element = document.getElementById('fc-user-identifier');
+            if (element) {
+                return element.getAttribute('data-user-id') || element.textContent;
+            }
+            
+            // Try to get from window variables
+            if (window._currentUserID) {
+                return window._currentUserID.toString();
+            }
+            if (window._userIdentifier) {
+                return window._userIdentifier.toString();
+            }
+            
+            return null;
+        }
+        
         const userIdentifierFromCookie = getCookie('fc_user_identifier');
-        const userIdentifier = userIdentifierFromCookie || payload.userIdentifier || '';
+        const userIdentifierFromDOM = getUserIdentifierFromDOM();
+        const userIdentifier = userIdentifierFromCookie || userIdentifierFromDOM || payload.userIdentifier || '';
         const channel = payload.channel || 'depop'; // Default to depop for backward compatibility
+        
+        console.log('🔍 USER IDENTIFIER DETECTION:');
+        console.log(' - From cookie:', userIdentifierFromCookie ? '[FOUND]' : '[NOT FOUND]');
+        console.log(' - From DOM:', userIdentifierFromDOM ? '[FOUND]' : '[NOT FOUND]'); 
+        console.log(' - From payload:', payload.userIdentifier ? '[FOUND]' : '[NOT FOUND]');
+        console.log(' - Final choice:', userIdentifier || '[NONE]');
         
         // Validate we're on a FLUF domain for cookie reading
         const isFlufDomain = window.location.hostname === 'fluf.io' || 
@@ -74,6 +100,7 @@ window.addEventListener('message', function(event) {
         
         // Extract tokens from current page cookies
         function getCookie(name) {
+            debugger;
             const value = `; ${document.cookie}`;
             const parts = value.split(`; ${name}=`);
             if (parts.length === 2) return parts.pop().split(';').shift();

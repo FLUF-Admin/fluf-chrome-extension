@@ -919,7 +919,7 @@ function sendTokenToAPI(extractedData, sourceUrl = "", userIdentifier = "", send
       const failedResults = results.filter(result => !result.success);
       
       if (successfulResults.length > 0) {
-        logStatus(`${channel.charAt(0).toUpperCase() + channel.slice(1)} data sent successfully to ${successfulResults.length} endpoint(s) at ${new Date().toLocaleString()}`, true);
+        logStatus(`Data sent successfully at ${new Date().toLocaleString()}`, true);
         
         if (sendResponse) {
           sendResponse({
