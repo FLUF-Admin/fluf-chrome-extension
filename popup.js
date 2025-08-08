@@ -37,8 +37,20 @@ function getStatus() {
     });
 }
 
+// Function to load version number from manifest
+function loadVersionNumber() {
+    const manifest = chrome.runtime.getManifest();
+    const versionElement = document.getElementById("version-number");
+    if (versionElement && manifest.version) {
+        versionElement.textContent = `v${manifest.version}`;
+    }
+}
+
 // Initialize popup
 document.addEventListener("DOMContentLoaded", () => {
+    // Load the version number
+    loadVersionNumber();
+    
     // Load the current status
     getStatus();
     

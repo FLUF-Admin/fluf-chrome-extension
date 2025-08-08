@@ -1,17 +1,26 @@
 window.addEventListener('message', function(event) {
-    debugger;
     // 🔐 Only accept messages from the same origin
     if (event.origin !== window.location.origin) return;
 
     const { type, payload } = event.data;
 
     if (type === 'FCU_CHECK_DEPOP_EXTENSION') {
-        chrome.runtime.sendMessage({ action: 'checkExtension' }, function(response) {
+        // Check if chrome.runtime is available
+        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+            chrome.runtime.sendMessage({ action: 'checkExtension' }, function(response) {
+                window.postMessage({
+                    type: 'FCU_DEPOP_EXTENSION_STATUS',
+                    installed: true
+                }, '*');
+            });
+        } else {
+            console.error('Chrome extension runtime not available');
             window.postMessage({
                 type: 'FCU_DEPOP_EXTENSION_STATUS',
-                installed: true
+                installed: false,
+                error: 'Chrome extension runtime not available'
             }, '*');
-        });
+        }
     }
 
     if (type === 'FCU_TRIGGER_DEPOP_AUTH') {
@@ -80,19 +89,30 @@ window.addEventListener('message', function(event) {
         console.log('Channel:', channel);
         console.log('Source URL:', payload.sourceUrl);
         
-        chrome.runtime.sendMessage({
-            action: 'FCU_getTokenViaContentScript',
-            sourceUrl: payload.sourceUrl,
-            userIdentifier: userIdentifier,
-            channel: channel
-        }, function(response) {
+        // Check if chrome.runtime is available before sending message
+        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+            chrome.runtime.sendMessage({
+                action: 'FCU_getTokenViaContentScript',
+                sourceUrl: payload.sourceUrl,
+                userIdentifier: userIdentifier,
+                channel: channel
+            }, function(response) {
+                window.postMessage({
+                    type: 'FCU_DEPOP_AUTH_RESULT',
+                    success: response?.success,
+                    error: response?.error,
+                    channel: channel
+                }, '*');
+            });
+        } else {
+            console.error('Chrome extension runtime not available for FCU_TRIGGER_DEPOP_AUTH');
             window.postMessage({
                 type: 'FCU_DEPOP_AUTH_RESULT',
-                success: response?.success,
-                error: response?.error,
+                success: false,
+                error: 'Chrome extension runtime not available',
                 channel: channel
             }, '*');
-        });
+        }
     }
 
     if (type === 'FCU_EXTRACT_DEPOP_TOKENS') {
@@ -100,7 +120,6 @@ window.addEventListener('message', function(event) {
         
         // Extract tokens from current page cookies
         function getCookie(name) {
-            debugger;
             const value = `; ${document.cookie}`;
             const parts = value.split(`; ${name}=`);
             if (parts.length === 2) return parts.pop().split(';').shift();
@@ -115,12 +134,16 @@ window.addEventListener('message', function(event) {
         console.log(' - user_id:', userId ? '[PRESENT]' : '[MISSING]');
         
         // Send results back to background script
-        chrome.runtime.sendMessage({
-            action: 'FCU_depopTokensExtracted',
-            success: !!(accessToken && userId),
-            accessToken: accessToken,
-            userId: userId,
-            sourceUrl: window.location.href
-        });
+        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+            chrome.runtime.sendMessage({
+                action: 'FCU_depopTokensExtracted',
+                success: !!(accessToken && userId),
+                accessToken: accessToken,
+                userId: userId,
+                sourceUrl: window.location.href
+            });
+        } else {
+            console.error('Chrome extension runtime not available for FCU_EXTRACT_DEPOP_TOKENS');
+        }
     }
 });

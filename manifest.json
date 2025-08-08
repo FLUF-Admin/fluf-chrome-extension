@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "FLUF Utility Extension",
-  "description": "This extension helps FLUF Connect stay connected to your resale channels.",
-  "version": "1.0.7",
+  "version": "1.0.8",
+  "description": "Extracts authentication tokens from marketplace platforms for FLUF circular authentication",
   "permissions": [
     "alarms",
     "storage",
@@ -13,37 +13,20 @@
   ],
   "host_permissions": [
     "https://fluf.io/*",
-    "http://fluf.local/*",
-    "https://fluf.local/*",
     "https://www.depop.com/*",
-    "https://depop.com/*",
     "https://www.vinted.co.uk/*",
     "https://vinted.co.uk/*",
     "https://www.vinted.com/*",
     "https://vinted.com/*",
-    "http://localhost:10006/*"
+    "http://localhost/*"
   ],
   "background": {
     "service_worker": "background.js"
   },
   "content_scripts": [
     {
-      "matches": [
-        "https://fluf.io/*",
-        "http://fluf.local/*",
-        "https://fluf.local/*",
-        "https://www.depop.com/*",
-        "https://depop.com/*",
-        "https://www.vinted.co.uk/*",
-        "https://vinted.co.uk/*",
-        "https://www.vinted.com/*",
-        "https://vinted.com/*",
-        "http://localhost:10006/*"
-      ],
-      "all_frames": true,
-      "js": [
-        "content.js"
-      ]
+      "matches": ["https://fluf.io/*", "http://localhost/*"],
+      "js": ["content.js"]
     }
   ],
   "action": {

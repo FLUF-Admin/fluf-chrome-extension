@@ -41,10 +41,24 @@
         button:hover {
             background-color: #333;
         }
-        .privacy-note {
+        .version {
+            font-size: 11px;
+            color: #999;
+            text-align: right;
+            margin-bottom: 10px;
+        }
+        .connect-info {
             font-size: 12px;
             margin-top: 15px;
             color: #757575;
+            text-align: center;
+        }
+        .connect-info a {
+            color: #1565c0;
+            text-decoration: none;
+        }
+        .connect-info a:hover {
+            text-decoration: underline;
         }
     </style>
 </head>
@@ -55,10 +69,13 @@
         <button id="checkNow">Check Now</button>
         <div id="status" class="status-box neutral">Loading status...</div>
 
-        <div class="privacy-note">
-            <p><strong>Privacy Information:</strong> This extension collects your authentication information to enable remote functionality.</p>
-            <p>The extension runs in the background once per hour to maintain your connection. Passwords are NOT read or managed by the extension.</p>
+        <div class="connect-info">
+            <p style="text-align: left; margin-top: 0;">
+                This extension helps <a href="https://fluf.io/connect" target="_blank">FLUF Connect</a> stay connected to your resale channels.
+            </p>
         </div>
+
+        <span id="version-number"></span>
     </div>
     <script src="popup.js"></script>
 </body>
