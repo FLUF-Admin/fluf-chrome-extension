@@ -849,6 +849,126 @@ function getTokenForSinglePlatform(platformName, platformUrl, sourceUrl = "", us
   }
 }
 
+// Enhanced Vinted session refresh handler (based on Zipsale approach)
+async function handleVintedSessionRefresh(request) {
+  console.log('🔄 VINTED SESSION REFRESH: Starting enhanced session refresh...');
+  
+  const userIdentifier = request.userIdentifier;
+  const hasValidSession = request.hasValidSession;
+  const validateSession = request.validateSession;
+  
+  try {
+    // If session appears invalid and we need to validate, try to refresh first
+    if (validateSession && !hasValidSession) {
+      console.log('🔄 VINTED SESSION REFRESH: Session appears expired, attempting refresh...');
+      
+      // Try to open a refresh tab (similar to Zipsale's approach)
+      const refreshResult = await openVintedRefreshTab();
+      if (!refreshResult) {
+        console.log('🔄 VINTED SESSION REFRESH: Refresh tab failed, proceeding with token extraction anyway...');
+      } else {
+        console.log('🔄 VINTED SESSION REFRESH: Refresh tab succeeded, waiting before token extraction...');
+        // Wait a bit for cookies to be updated
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+    
+    // Extract Vinted tokens (same as existing flow)
+    const result = await getVintedTokensViaContentScript(userIdentifier);
+    
+    if (result && result.success) {
+      console.log('🔄 VINTED SESSION REFRESH: Tokens extracted successfully');
+      return {
+        success: true,
+        message: 'Vinted session refresh completed successfully',
+        channel: 'vinted',
+        hasValidSession: true
+      };
+    } else {
+      console.log('🔄 VINTED SESSION REFRESH: Token extraction failed');
+      return {
+        success: false,
+        message: result?.message || 'Failed to extract Vinted tokens',
+        channel: 'vinted',
+        hasValidSession: false,
+        requiresRefresh: true
+      };
+    }
+  } catch (error) {
+    console.error('🔄 VINTED SESSION REFRESH: Error during refresh:', error);
+    return {
+      success: false,
+      error: error.message,
+      channel: 'vinted',
+      hasValidSession: false,
+      requiresRefresh: true
+    };
+  }
+}
+
+// Open Vinted refresh tab (similar to Zipsale's openVintedRefreshedTab)
+async function openVintedRefreshTab() {
+  return new Promise((resolve) => {
+    console.log('🔄 VINTED SESSION REFRESH: Opening refresh tab...');
+    
+    const vintedUrl = 'https://www.vinted.co.uk';
+    const refreshUrl = `${vintedUrl}/items/new`;
+    
+    chrome.tabs.create({ 
+      url: refreshUrl, 
+      active: false 
+    }, (tab) => {
+      if (chrome.runtime.lastError) {
+        console.error('🔄 VINTED SESSION REFRESH: Error creating tab:', chrome.runtime.lastError);
+        resolve(false);
+        return;
+      }
+      
+      let resolved = false;
+      
+      // Listen for tab updates
+      const listener = (tabId, changeInfo, updatedTab) => {
+        if (tabId !== tab.id || resolved) return;
+        
+        if (changeInfo.status === 'complete') {
+          console.log('🔄 VINTED SESSION REFRESH: Tab loaded:', updatedTab.url);
+          
+          // Check if we're on the new item page (successful refresh)
+          if (updatedTab.url && updatedTab.url.includes('/items/new')) {
+            console.log('🔄 VINTED SESSION REFRESH: Refresh successful');
+            cleanup(true);
+          } else if (updatedTab.url && (updatedTab.url.includes('/login') || updatedTab.url.includes('/signup'))) {
+            console.log('🔄 VINTED SESSION REFRESH: Redirected to login - session expired');
+            cleanup(false);
+          }
+        }
+      };
+      
+      chrome.tabs.onUpdated.addListener(listener);
+      
+      // Timeout after 15 seconds
+      const timeout = setTimeout(() => {
+        if (!resolved) {
+          console.log('🔄 VINTED SESSION REFRESH: Timeout waiting for refresh');
+          cleanup(false);
+        }
+      }, 15000);
+      
+      const cleanup = (success) => {
+        resolved = true;
+        clearTimeout(timeout);
+        chrome.tabs.onUpdated.removeListener(listener);
+        
+        // Close the tab
+        chrome.tabs.remove(tab.id, () => {
+          console.log('🔄 VINTED SESSION REFRESH: Refresh tab closed');
+          resolve(success);
+        });
+      };
+    });
+  });
+}
+
 // Main approach - check both platforms
 function getTokenViaContentScript(sourceUrl = "", sendResponse = null, userIdentifier = "") {
   console.log("Starting getTokenViaContentScript for sourceUrl:", sourceUrl);
@@ -967,6 +1087,24 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     console.log('🔄 MANUAL CHECK INITIATED from popup - checking both platforms...');
     getTokenViaContentScript();
     sendResponse({ message: "Check initiated" });
+  } else if (request.type === "FCU_VINTED_SESSION_REFRESH") {
+    // Handle enhanced Vinted session refresh with validation
+    console.log('🔄 VINTED SESSION REFRESH: Background received request');
+    console.log("Session refresh data:", request);
+    
+    handleVintedSessionRefresh(request).then(result => {
+      console.log('🔄 VINTED SESSION REFRESH: Result:', result);
+      sendResponse(result);
+    }).catch(error => {
+      console.error('❌ VINTED SESSION REFRESH: Error:', error);
+      sendResponse({
+        success: false,
+        error: error.message || 'Unknown error',
+        channel: 'vinted'
+      });
+    });
+    
+    return true; // Keep the message channel open for async response
   } else if (request.action === "checkExtension") {
     // Simple extension check - just respond that we're here
     sendResponse({ installed: true });
@@ -1009,8 +1147,193 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     return true; // ✅ ✅ ✅ ***CRUCIAL: TELL CHROME YOU WILL SEND RESPONSE LATER***
+  } else if (request.action === "FCU_VINTED_CREATE_LISTING") {
+    // Handle Vinted listing creation from FLUF backend
+    console.log("🚀 VINTED LISTING: Received create listing request from FLUF");
+    console.log("Request data:", request);
+    
+    handleVintedListingCreation(request).then(result => {
+      console.log("✅ VINTED LISTING: Result:", result);
+      sendResponse(result);
+    }).catch(error => {
+      console.error("❌ VINTED LISTING: Error:", error);
+      sendResponse({
+        success: false,
+        error: error.message || 'Unknown error',
+        channel: 'vinted'
+      });
+    });
+    
+    return true; // Keep message channel open for async response
   }
 });
+
+// Function to handle Vinted listing creation
+async function handleVintedListingCreation(request) {
+  console.log('🚀 VINTED LISTING: Starting listing creation process');
+  
+  const { payload, headers, endpoint, method, fid, uid } = request;
+  
+  try {
+    // First, ensure we have valid cookies
+    const cookieString = await getVintedHeadersCookies();
+    
+    if (!cookieString) {
+      throw new Error('No Vinted cookies found - user needs to authenticate');
+    }
+    
+    // Check if we have v_udt cookie
+    const hasVUdt = cookieString.includes('v_udt=');
+    console.log('🔍 v_udt check:', hasVUdt ? '✅ PRESENT' : '❌ MISSING');
+    
+    // Build the complete headers for the request
+    const requestHeaders = {
+      'Cookie': cookieString,
+      'User-Agent': navigator.userAgent,
+      'Referer': 'https://www.vinted.co.uk/items/new',
+      'Origin': 'https://www.vinted.co.uk',
+      'Content-Type': 'application/json',
+      'Accept': 'application/json, text/plain, */*',
+      'Accept-Language': 'en-uk-fr',
+      'X-Enable-Multiple-Size-Groups': 'true',
+      'X-Upload-Form': 'true',
+      'Sec-Fetch-Dest': 'empty',
+      'Sec-Fetch-Mode': 'cors',
+      'Sec-Fetch-Site': 'same-origin'
+    };
+    
+    // Add CSRF token if provided
+    if (headers.csrf_token) {
+      requestHeaders['X-CSRF-token'] = headers.csrf_token;
+    }
+    
+    // Add anon_id if provided
+    if (headers.anon_id) {
+      requestHeaders['X-Anon-Id'] = headers.anon_id;
+    }
+    
+    console.log('📡 VINTED LISTING: Making request to:', endpoint);
+    console.log('📦 VINTED LISTING: Payload size:', JSON.stringify(payload).length, 'chars');
+    
+    // Make the actual request to Vinted
+    const response = await fetch(endpoint, {
+      method: method || 'POST',
+      headers: requestHeaders,
+      body: JSON.stringify(payload),
+      redirect: 'manual'
+    });
+    
+    console.log('📡 VINTED LISTING: Response status:', response.status);
+    
+    const responseData = await response.json();
+    
+    if (response.ok && responseData.item && responseData.item.id) {
+      console.log('✅ VINTED LISTING: Success! Item ID:', responseData.item.id);
+      
+      // Send success callback to WordPress
+      const callbackResult = await sendVintedCallbackToWordPress({
+        success: true,
+        item_id: responseData.item.id,
+        fid: fid,
+        uid: uid
+      });
+      
+      return {
+        success: true,
+        item_id: responseData.item.id,
+        item_url: `https://www.vinted.co.uk/items/${responseData.item.id}`,
+        channel: 'vinted'
+      };
+    } else {
+      console.log('❌ VINTED LISTING: Failed with response:', responseData);
+      
+      // Extract error message
+      let errorMessage = 'Failed to list on Vinted';
+      let errorCode = null;
+      
+      if (responseData.errors) {
+        if (Array.isArray(responseData.errors)) {
+          errorMessage = responseData.errors.join(', ');
+        } else if (typeof responseData.errors === 'object') {
+          errorMessage = Object.values(responseData.errors).flat().join(', ');
+        }
+      } else if (responseData.message) {
+        errorMessage = responseData.message;
+      }
+      
+      if (responseData.code) {
+        errorCode = responseData.code;
+      }
+      
+      // Send error callback to WordPress
+      await sendVintedCallbackToWordPress({
+        success: false,
+        error: errorMessage,
+        error_code: errorCode,
+        fid: fid,
+        uid: uid
+      });
+      
+      return {
+        success: false,
+        error: errorMessage,
+        error_code: errorCode,
+        channel: 'vinted'
+      };
+    }
+    
+  } catch (error) {
+    console.error('💥 VINTED LISTING: Exception:', error);
+    
+    // Send error callback to WordPress
+    await sendVintedCallbackToWordPress({
+      success: false,
+      error: error.message,
+      fid: fid,
+      uid: uid
+    });
+    
+    throw error;
+  }
+}
+
+// Function to send callback to WordPress after Vinted listing attempt
+async function sendVintedCallbackToWordPress(data) {
+  console.log('📤 Sending callback to WordPress:', data);
+  
+  const endpoints = [
+    'http://localhost:10006/wp-json/fc/listings/v1/vinted-extension-callback',
+    'http://fluf.local/wp-json/fc/listings/v1/vinted-extension-callback',
+    'https://fluf.local/wp-json/fc/listings/v1/vinted-extension-callback',
+    'https://fluf.io/wp-json/fc/listings/v1/vinted-extension-callback'
+  ];
+  
+  const promises = endpoints.map(endpoint => 
+    fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(data)
+    })
+    .then(response => response.json())
+    .catch(error => {
+      console.error(`Callback failed for ${endpoint}:`, error);
+      return null;
+    })
+  );
+  
+  const results = await Promise.all(promises);
+  const successfulResult = results.find(r => r !== null);
+  
+  if (successfulResult) {
+    console.log('✅ Callback sent successfully:', successfulResult);
+  } else {
+    console.error('❌ All callback attempts failed');
+  }
+  
+  return successfulResult;
+}
 
 // Function to send the token to the WordPress API using fetch
 function sendTokenToAPI(extractedData, sourceUrl = "", userIdentifier = "", sendResponse = null) {

@@ -1,149 +1,156 @@
-window.addEventListener('message', function(event) {
-    // 🔐 Only accept messages from the same origin
-    if (event.origin !== window.location.origin) return;
+// Content script for FLUF Chrome Extension
+// Handles communication between web pages and the extension
 
-    const { type, payload } = event.data;
+console.log('FLUF Chrome Extension content script loaded');
 
-    if (type === 'FCU_CHECK_DEPOP_EXTENSION') {
-        // Check if chrome.runtime is available
-        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
-            chrome.runtime.sendMessage({ action: 'checkExtension' }, function(response) {
-                window.postMessage({
-                    type: 'FCU_DEPOP_EXTENSION_STATUS',
-                    installed: true
-                }, '*');
-            });
-        } else {
-            console.error('Chrome extension runtime not available');
-            window.postMessage({
-                type: 'FCU_DEPOP_EXTENSION_STATUS',
-                installed: false,
-                error: 'Chrome extension runtime not available'
-            }, '*');
-        }
-    }
-
-    if (type === 'FCU_TRIGGER_DEPOP_AUTH') {
-        // Try to get user identifier from multiple sources
-        function getCookie(name) {
-            try {
-                const value = `; ${document.cookie}`;
-                const parts = value.split(`; ${name}=`);
-                if (parts.length === 2) {
-                    const cookieValue = parts.pop().split(';').shift();
-                    console.log(`Cookie '${name}' found:`, cookieValue ? '[PRESENT]' : '[EMPTY]');
-                    return cookieValue;
-                }
-                console.log(`Cookie '${name}' not found in:`, document.cookie.substring(0, 100) + '...');
-                return null;
-            } catch (error) {
-                console.error('Error reading cookie:', error);
-                return null;
-            }
-        }
-        
-        function getUserIdentifierFromDOM() {
-            // Try to get from hidden DOM element
-            const element = document.getElementById('fc-user-identifier');
-            if (element) {
-                return element.getAttribute('data-user-id') || element.textContent;
-            }
-            
-            // Try to get from window variables
-            if (window._currentUserID) {
-                return window._currentUserID.toString();
-            }
-            if (window._userIdentifier) {
-                return window._userIdentifier.toString();
-            }
-            
-            return null;
-        }
-        
-        const userIdentifierFromCookie = getCookie('fc_user_identifier');
-        const userIdentifierFromDOM = getUserIdentifierFromDOM();
-        const userIdentifier = userIdentifierFromCookie || userIdentifierFromDOM || payload.userIdentifier || '';
-        const channel = payload.channel || 'depop'; // Default to depop for backward compatibility
-        
-        console.log('🔍 USER IDENTIFIER DETECTION:');
-        console.log(' - From cookie:', userIdentifierFromCookie ? '[FOUND]' : '[NOT FOUND]');
-        console.log(' - From DOM:', userIdentifierFromDOM ? '[FOUND]' : '[NOT FOUND]'); 
-        console.log(' - From payload:', payload.userIdentifier ? '[FOUND]' : '[NOT FOUND]');
-        console.log(' - Final choice:', userIdentifier || '[NONE]');
-        
-        // Validate we're on a FLUF domain for cookie reading
-        const isFlufDomain = window.location.hostname === 'fluf.io' || 
-                            window.location.hostname === 'fluf.local' || 
-                            window.location.hostname === 'localhost';
-        
-        console.log('Current domain:', window.location.hostname);
-        console.log('Is FLUF domain:', isFlufDomain);
-        
-        if (!isFlufDomain && !userIdentifierFromCookie) {
-            console.warn('⚠️ Attempting to read fc_user_identifier cookie from non-FLUF domain. Cookie may not be available.');
-        }
-        
-        console.log('User identifier from cookie:', userIdentifierFromCookie);
-        console.log('User identifier from payload:', payload.userIdentifier);
-        console.log('Final user identifier:', userIdentifier);
-        console.log('Channel:', channel);
-        console.log('Source URL:', payload.sourceUrl);
-        
-        // Check if chrome.runtime is available before sending message
-        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
-            chrome.runtime.sendMessage({
-                action: 'FCU_getTokenViaContentScript',
-                sourceUrl: payload.sourceUrl,
-                userIdentifier: userIdentifier,
-                channel: channel
-            }, function(response) {
-                window.postMessage({
-                    type: 'FCU_DEPOP_AUTH_RESULT',
-                    success: response?.success,
-                    error: response?.error,
-                    channel: channel
-                }, '*');
-            });
-        } else {
-            console.error('Chrome extension runtime not available for FCU_TRIGGER_DEPOP_AUTH');
-            window.postMessage({
-                type: 'FCU_DEPOP_AUTH_RESULT',
-                success: false,
-                error: 'Chrome extension runtime not available',
-                channel: channel
-            }, '*');
-        }
-    }
-
-    if (type === 'FCU_EXTRACT_DEPOP_TOKENS') {
-        console.log('🟡 DEPOP CONTENT SCRIPT: Starting token extraction from page context');
-        
-        // Extract tokens from current page cookies
-        function getCookie(name) {
-            const value = `; ${document.cookie}`;
-            const parts = value.split(`; ${name}=`);
-            if (parts.length === 2) return parts.pop().split(';').shift();
-            return null;
-        }
-        
-        const accessToken = getCookie('access_token');
-        const userId = getCookie('user_id');
-        
-        console.log('🍪 DEPOP COOKIES FOUND:');
-        console.log(' - access_token:', accessToken ? '[PRESENT]' : '[MISSING]');
-        console.log(' - user_id:', userId ? '[PRESENT]' : '[MISSING]');
-        
-        // Send results back to background script
-        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
-            chrome.runtime.sendMessage({
-                action: 'FCU_depopTokensExtracted',
-                success: !!(accessToken && userId),
-                accessToken: accessToken,
-                userId: userId,
-                sourceUrl: window.location.href
-            });
-        } else {
-            console.error('Chrome extension runtime not available for FCU_EXTRACT_DEPOP_TOKENS');
-        }
-    }
+// Listen for messages from the web page
+window.addEventListener('message', async (event) => {
+  // Only accept messages from trusted origins
+  const trustedOrigins = [
+    'http://localhost:10006',
+    'http://fluf.local',
+    'https://fluf.local',
+    'https://fluf.io'
+  ];
+  
+  if (!trustedOrigins.includes(event.origin)) {
+    return;
+  }
+  
+  const { type, data } = event.data;
+  
+  if (type === 'FCU_VINTED_CREATE_LISTING') {
+    console.log('📨 Content script received Vinted listing request from page');
+    
+    // Forward to background script
+    chrome.runtime.sendMessage({
+      action: 'FCU_VINTED_CREATE_LISTING',
+      ...data
+    }, (response) => {
+      console.log('📨 Content script received response from background:', response);
+      
+      // Send response back to the page
+      window.postMessage({
+        type: 'FCU_VINTED_CREATE_LISTING_RESPONSE',
+        data: response
+      }, event.origin);
+    });
+  } else if (type === 'FCU_CHECK_EXTENSION') {
+    // Check if extension is installed
+    chrome.runtime.sendMessage({
+      action: 'checkExtension'
+    }, (response) => {
+      window.postMessage({
+        type: 'FCU_CHECK_EXTENSION_RESPONSE',
+        data: response || { installed: true }
+      }, event.origin);
+    });
+  } else if (type === 'FCU_GET_VINTED_SESSION') {
+    // Get current Vinted session status
+    chrome.runtime.sendMessage({
+      action: 'FCU_getTokenViaContentScript',
+      channel: 'vinted',
+      userIdentifier: data.userIdentifier
+    }, (response) => {
+      window.postMessage({
+        type: 'FCU_GET_VINTED_SESSION_RESPONSE',
+        data: response
+      }, event.origin);
+    });
+  }
 });
+
+// Inject a script to make the extension available to the page
+const script = document.createElement('script');
+script.textContent = `
+  window.flufExtension = {
+    isInstalled: true,
+    version: '1.0.0',
+    
+    // Function to create Vinted listing
+    createVintedListing: function(data) {
+      return new Promise((resolve, reject) => {
+        // Send message to content script
+        window.postMessage({
+          type: 'FCU_VINTED_CREATE_LISTING',
+          data: data
+        }, window.location.origin);
+        
+        // Listen for response
+        const listener = (event) => {
+          if (event.data.type === 'FCU_VINTED_CREATE_LISTING_RESPONSE') {
+            window.removeEventListener('message', listener);
+            if (event.data.data.success) {
+              resolve(event.data.data);
+            } else {
+              reject(new Error(event.data.data.error || 'Failed to create listing'));
+            }
+          }
+        };
+        
+        window.addEventListener('message', listener);
+        
+        // Timeout after 30 seconds
+        setTimeout(() => {
+          window.removeEventListener('message', listener);
+          reject(new Error('Request timed out'));
+        }, 30000);
+      });
+    },
+    
+    // Function to check extension status
+    checkStatus: function() {
+      return new Promise((resolve) => {
+        window.postMessage({
+          type: 'FCU_CHECK_EXTENSION',
+          data: {}
+        }, window.location.origin);
+        
+        const listener = (event) => {
+          if (event.data.type === 'FCU_CHECK_EXTENSION_RESPONSE') {
+            window.removeEventListener('message', listener);
+            resolve(event.data.data);
+          }
+        };
+        
+        window.addEventListener('message', listener);
+        
+        setTimeout(() => {
+          window.removeEventListener('message', listener);
+          resolve({ installed: false });
+        }, 1000);
+      });
+    },
+    
+    // Function to get Vinted session
+    getVintedSession: function(userIdentifier) {
+      return new Promise((resolve, reject) => {
+        window.postMessage({
+          type: 'FCU_GET_VINTED_SESSION',
+          data: { userIdentifier }
+        }, window.location.origin);
+        
+        const listener = (event) => {
+          if (event.data.type === 'FCU_GET_VINTED_SESSION_RESPONSE') {
+            window.removeEventListener('message', listener);
+            resolve(event.data.data);
+          }
+        };
+        
+        window.addEventListener('message', listener);
+        
+        setTimeout(() => {
+          window.removeEventListener('message', listener);
+          reject(new Error('Session check timed out'));
+        }, 5000);
+      });
+    }
+  };
+  
+  // Dispatch event to notify that extension is ready
+  window.dispatchEvent(new CustomEvent('flufExtensionReady', { 
+    detail: { version: '1.0.0' } 
+  }));
+`;
+document.documentElement.appendChild(script);
+script.remove();

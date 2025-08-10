@@ -18,14 +18,15 @@
     "https://vinted.co.uk/*",
     "https://www.vinted.com/*",
     "https://vinted.com/*",
-    "http://localhost/*"
+    "http://localhost/*",
+    "http://fluf.local/*"
   ],
   "background": {
     "service_worker": "background.js"
   },
   "content_scripts": [
     {
-      "matches": ["https://fluf.io/*", "http://localhost/*"],
+      "matches": ["https://fluf.io/*", "http://localhost/*", "http://fluf.local/*"],
       "js": ["content.js"]
     }
   ],
