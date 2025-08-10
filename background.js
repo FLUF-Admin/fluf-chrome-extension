@@ -1092,8 +1092,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // Function to handle Vinted listing creation
 async function handleVintedListingCreation(request) {
   console.log('🚀 VINTED LISTING: Starting listing creation process');
+  console.log('📋 VINTED LISTING: Request data:', { fid: request.fid, vid: request.vid, uid: request.uid });
   
-  const { payload, headers, endpoint, method, fid, uid } = request;
+  const { payload, headers, endpoint, method, fid, vid, uid } = request;
+  
+  // Validate required parameters
+  if (!fid) {
+    throw new Error('Missing required parameter: fid');
+  }
+  if (!vid) {
+    throw new Error('Missing required parameter: vid');
+  }
+  if (!uid) {
+    throw new Error('Missing required parameter: uid');
+  }
+  
+  console.log(`✅ VINTED LISTING: Parameters validated - FID: ${fid}, VID: ${vid}, UID: ${uid}`);
   
   try {
     // First, ensure we have valid cookies
