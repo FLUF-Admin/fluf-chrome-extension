@@ -14,9 +14,6 @@ chrome.runtime.onInstalled.addListener((details) => {
   chrome.alarms.create("FCU_checkDepop", { periodInMinutes: 360 }); // Every 6 hours
   chrome.alarms.create("FCU_checkVinted", { periodInMinutes: 20 }); // Every 30 minutes
 
-  // Set up passive monitoring for v_udt cookies
-  setupPassiveVUdtMonitoring();
-
   // Run once on installation for both platforms
   getTokenViaContentScript();
 });

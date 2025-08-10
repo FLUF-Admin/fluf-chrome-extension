@@ -9,7 +9,6 @@ window.addEventListener('message', async (event) => {
   const trustedOrigins = [
     'http://localhost:10006',
     'http://fluf.local',
-    'https://fluf.local',
     'https://fluf.io'
   ];
   
@@ -80,14 +79,24 @@ window.addEventListener('fluf-extension-call', async (event) => {
   
   switch(method) {
     case 'createVintedListing':
-      // Forward to background script
+      // Forward to background script with context invalidation handling
       try {
         response = await chrome.runtime.sendMessage({
           action: 'FCU_VINTED_CREATE_LISTING',
           ...data
         });
       } catch (error) {
-        response = { success: false, error: error.message };
+        console.error('Content script error:', error);
+        
+        // Check for context invalidation
+        if (error.message && error.message.includes('Extension context invalidated')) {
+          response = { 
+            success: false, 
+            error: 'Extension context invalidated. Please refresh the page and try again.' 
+          };
+        } else {
+          response = { success: false, error: error.message };
+        }
       }
       break;
       
@@ -103,7 +112,16 @@ window.addEventListener('fluf-extension-call', async (event) => {
           userIdentifier: data.userIdentifier
         });
       } catch (error) {
-        response = { success: false, error: error.message };
+        console.error('Content script error:', error);
+        
+        if (error.message && error.message.includes('Extension context invalidated')) {
+          response = { 
+            success: false, 
+            error: 'Extension context invalidated. Please refresh the page and try again.' 
+          };
+        } else {
+          response = { success: false, error: error.message };
+        }
       }
       break;
       
