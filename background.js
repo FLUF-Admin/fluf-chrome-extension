@@ -1169,6 +1169,7 @@ async function handleVintedListingCreation(request) {
         success: true,
         item_id: responseData.item.id,
         fid: fid,
+        vid: vid,
         uid: uid
       });
       
@@ -1205,6 +1206,7 @@ async function handleVintedListingCreation(request) {
         error: errorMessage,
         error_code: errorCode,
         fid: fid,
+        vid: vid,
         uid: uid
       });
       
@@ -1224,6 +1226,7 @@ async function handleVintedListingCreation(request) {
       success: false,
       error: error.message,
       fid: fid,
+      vid: vid,
       uid: uid
     });
     
