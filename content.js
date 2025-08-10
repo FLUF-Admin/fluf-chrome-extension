@@ -60,97 +60,59 @@ window.addEventListener('message', async (event) => {
   }
 });
 
-// Inject a script to make the extension available to the page
-const script = document.createElement('script');
-script.textContent = `
-  window.flufExtension = {
-    isInstalled: true,
-    version: '1.0.0',
-    
-    // Function to create Vinted listing
-    createVintedListing: function(data) {
-      return new Promise((resolve, reject) => {
-        // Send message to content script
-        window.postMessage({
-          type: 'FCU_VINTED_CREATE_LISTING',
-          data: data
-        }, window.location.origin);
-        
-        // Listen for response
-        const listener = (event) => {
-          if (event.data.type === 'FCU_VINTED_CREATE_LISTING_RESPONSE') {
-            window.removeEventListener('message', listener);
-            if (event.data.data.success) {
-              resolve(event.data.data);
-            } else {
-              reject(new Error(event.data.data.error || 'Failed to create listing'));
-            }
-          }
-        };
-        
-        window.addEventListener('message', listener);
-        
-        // Timeout after 30 seconds
-        setTimeout(() => {
-          window.removeEventListener('message', listener);
-          reject(new Error('Request timed out'));
-        }, 30000);
-      });
-    },
-    
-    // Function to check extension status
-    checkStatus: function() {
-      return new Promise((resolve) => {
-        window.postMessage({
-          type: 'FCU_CHECK_EXTENSION',
-          data: {}
-        }, window.location.origin);
-        
-        const listener = (event) => {
-          if (event.data.type === 'FCU_CHECK_EXTENSION_RESPONSE') {
-            window.removeEventListener('message', listener);
-            resolve(event.data.data);
-          }
-        };
-        
-        window.addEventListener('message', listener);
-        
-        setTimeout(() => {
-          window.removeEventListener('message', listener);
-          resolve({ installed: false });
-        }, 1000);
-      });
-    },
-    
-    // Function to get Vinted session
-    getVintedSession: function(userIdentifier) {
-      return new Promise((resolve, reject) => {
-        window.postMessage({
-          type: 'FCU_GET_VINTED_SESSION',
-          data: { userIdentifier }
-        }, window.location.origin);
-        
-        const listener = (event) => {
-          if (event.data.type === 'FCU_GET_VINTED_SESSION_RESPONSE') {
-            window.removeEventListener('message', listener);
-            resolve(event.data.data);
-          }
-        };
-        
-        window.addEventListener('message', listener);
-        
-        setTimeout(() => {
-          window.removeEventListener('message', listener);
-          reject(new Error('Session check timed out'));
-        }, 5000);
-      });
-    }
-  };
+// Instead of injecting inline script, we'll use a different approach
+// We'll expose the API through custom events and data attributes
+
+// Set a data attribute to indicate extension is installed
+document.documentElement.setAttribute('data-fluf-extension', 'installed');
+document.documentElement.setAttribute('data-fluf-extension-version', '1.0.0');
+
+// Dispatch event to notify that extension is ready
+window.dispatchEvent(new CustomEvent('flufExtensionReady', { 
+  detail: { version: '1.0.0', installed: true } 
+}));
+
+// Listen for API calls from the page via custom events
+window.addEventListener('fluf-extension-call', async (event) => {
+  const { method, data, requestId } = event.detail;
   
-  // Dispatch event to notify that extension is ready
-  window.dispatchEvent(new CustomEvent('flufExtensionReady', { 
-    detail: { version: '1.0.0' } 
+  let response;
+  
+  switch(method) {
+    case 'createVintedListing':
+      // Forward to background script
+      try {
+        response = await chrome.runtime.sendMessage({
+          action: 'FCU_VINTED_CREATE_LISTING',
+          ...data
+        });
+      } catch (error) {
+        response = { success: false, error: error.message };
+      }
+      break;
+      
+    case 'checkStatus':
+      response = { installed: true, version: '1.0.0' };
+      break;
+      
+    case 'getVintedSession':
+      try {
+        response = await chrome.runtime.sendMessage({
+          action: 'FCU_getTokenViaContentScript',
+          channel: 'vinted',
+          userIdentifier: data.userIdentifier
+        });
+      } catch (error) {
+        response = { success: false, error: error.message };
+      }
+      break;
+      
+    default:
+      response = { success: false, error: 'Unknown method' };
+  }
+  
+  // Send response back via custom event
+  window.dispatchEvent(new CustomEvent('fluf-extension-response', {
+    detail: { requestId, response }
   }));
-`;
-document.documentElement.appendChild(script);
-script.remove();
+});
