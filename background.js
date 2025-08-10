@@ -1202,13 +1202,30 @@ async function handleVintedListingCreation(request) {
       
       if (responseData.errors) {
         if (Array.isArray(responseData.errors)) {
-          errorMessage = responseData.errors.join(', ');
+          // Extract meaningful error messages from objects
+          const errorMessages = responseData.errors.map(error => {
+            if (typeof error === 'object' && error !== null) {
+              return error.message || error.text || JSON.stringify(error);
+            }
+            return String(error);
+          }).filter(msg => msg && msg !== '{}');
+          
+          errorMessage = errorMessages.length > 0 ? errorMessages.join(', ') : 'Validation errors occurred';
         } else if (typeof responseData.errors === 'object') {
-          errorMessage = Object.values(responseData.errors).flat().join(', ');
+          const errorMessages = Object.values(responseData.errors).flat().map(error => {
+            if (typeof error === 'object' && error !== null) {
+              return error.message || error.text || JSON.stringify(error);
+            }
+            return String(error);
+          }).filter(msg => msg && msg !== '{}');
+          
+          errorMessage = errorMessages.length > 0 ? errorMessages.join(', ') : 'Validation errors occurred';
         }
       } else if (responseData.message) {
         errorMessage = responseData.message;
       }
+      
+      console.log('🔍 VINTED ERROR: Extracted message:', errorMessage);
       
       if (responseData.code) {
         errorCode = responseData.code;
