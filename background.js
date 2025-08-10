@@ -322,82 +322,6 @@ async function getVintedCSRFFromItemsNewWithCookies(cookieHeader) {
   
   return null;
 }
-
-// Function to passively monitor for v_udt cookie during natural user activity
-async function setupPassiveVUdtMonitoring() {
-  console.log('👁️ Setting up passive v_udt monitoring...');
-  
-  // Listen for any Vinted activity and capture v_udt when it appears
-  chrome.webRequest.onBeforeSendHeaders.addListener(
-    (details) => {
-      if (!details.url.includes('vinted.co.uk') && !details.url.includes('vinted.com')) {
-        return;
-      }
-      
-      const cookieHeader = details.requestHeaders.find(header => 
-        header.name.toLowerCase() === 'cookie'
-      );
-      
-      if (cookieHeader && cookieHeader.value.includes('v_udt=')) {
-        const vUdtMatch = cookieHeader.value.match(/v_udt=([^;]+)/);
-        if (vUdtMatch) {
-          console.log('🎯 PASSIVE CAPTURE: v_udt cookie detected during natural activity');
-          console.log(' - URL:', details.url);
-          console.log(' - Source: User activity');
-          
-          chrome.storage.local.set({
-            vinted_v_udt_cookie: {
-              value: vUdtMatch[1],
-              timestamp: Date.now(),
-              source: 'passive_monitoring',
-              url: details.url,
-              user_activity: true
-            }
-          });
-        }
-      }
-    },
-    { urls: ["*://*.vinted.co.uk/*", "*://*.vinted.com/*"] },
-    ["requestHeaders"]
-  );
-  
-  // Also monitor for Set-Cookie headers that might contain v_udt
-  chrome.webRequest.onHeadersReceived.addListener(
-    (details) => {
-      if (!details.url.includes('vinted.co.uk') && !details.url.includes('vinted.com')) {
-        return;
-      }
-      
-      const setCookieHeaders = details.responseHeaders.filter(header => 
-        header.name.toLowerCase() === 'set-cookie'
-      );
-      
-      setCookieHeaders.forEach(header => {
-        if (header.value.toLowerCase().includes('v_udt=')) {
-          const vUdtMatch = header.value.match(/v_udt=([^;]+)/i);
-          if (vUdtMatch) {
-            console.log('🎯 PASSIVE CAPTURE: v_udt Set-Cookie detected during natural activity');
-            console.log(' - URL:', details.url);
-            console.log(' - Source: Server response');
-            
-            chrome.storage.local.set({
-              vinted_v_udt_cookie: {
-                value: vUdtMatch[1],
-                timestamp: Date.now(),
-                source: 'passive_set_cookie',
-                url: details.url,
-                user_activity: true
-              }
-            });
-          }
-        }
-      });
-    },
-    { urls: ["*://*.vinted.co.uk/*", "*://*.vinted.com/*"] },
-    ["responseHeaders"]
-  );
-}
-
 // Function to get Vinted CSRF token using Zipsale's exact method
 async function getVintedCSRFTokenZipsaleStyle() {
   console.log('🔍 Getting Vinted CSRF token using Zipsale method...');
@@ -1186,9 +1110,18 @@ async function handleVintedListingCreation(request) {
     const hasVUdt = cookieString.includes('v_udt=');
     console.log('🔍 v_udt check:', hasVUdt ? '✅ PRESENT' : '❌ MISSING');
     
+    // Ensure v_udt cookie is present
+    let finalCookieString = cookieString;
+    
+    // If v_udt is not in browser cookies, add it from the backend
+    if (!cookieString.includes('v_udt=') && headers.v_udt_cookie) {
+      finalCookieString = cookieString + '; ' + headers.v_udt_cookie;
+      console.log('🔧 VINTED LISTING: Added v_udt from backend');
+    }
+    
     // Build the complete headers for the request
     const requestHeaders = {
-      'Cookie': cookieString,
+      'Cookie': finalCookieString,
       'User-Agent': navigator.userAgent,
       'Referer': 'https://www.vinted.co.uk/items/new',
       'Origin': 'https://www.vinted.co.uk',
@@ -1202,14 +1135,18 @@ async function handleVintedListingCreation(request) {
       'Sec-Fetch-Site': 'same-origin'
     };
     
-    // Add CSRF token if provided
+    // Add CSRF token if provided - this is crucial for Vinted
     if (headers.csrf_token) {
       requestHeaders['X-CSRF-token'] = headers.csrf_token;
+      console.log('🔐 VINTED LISTING: Added CSRF token from backend');
+    } else {
+      console.warn('⚠️ VINTED LISTING: No CSRF token provided - request may fail');
     }
     
     // Add anon_id if provided
     if (headers.anon_id) {
       requestHeaders['X-Anon-Id'] = headers.anon_id;
+      console.log('🆔 VINTED LISTING: Added anon ID from backend');
     }
     
     console.log('📡 VINTED LISTING: Making request to:', endpoint);
