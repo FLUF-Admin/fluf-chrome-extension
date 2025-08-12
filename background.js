@@ -1,8 +1,6 @@
 // Endpoints - send to localhost, local development, and production
 const ENDPOINTS = [
   "http://localhost:10006/wp-json/fc/circular-auth/v1/token",
-  "http://fluf.local/wp-json/fc/circular-auth/v1/token",
-  "https://fluf.local/wp-json/fc/circular-auth/v1/token",
   "https://fluf.io/wp-json/fc/circular-auth/v1/token"
 ];
 
@@ -1271,36 +1269,56 @@ async function sendVintedCallbackToWordPress(data) {
   
   const endpoints = [
     'http://localhost:10006/wp-json/fc/listings/v1/vinted-extension-callback',
-    'http://fluf.local/wp-json/fc/listings/v1/vinted-extension-callback',
-    'https://fluf.local/wp-json/fc/listings/v1/vinted-extension-callback',
     'https://fluf.io/wp-json/fc/listings/v1/vinted-extension-callback'
   ];
   
-  const promises = endpoints.map(endpoint => 
-    fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(data)
-    })
-    .then(response => response.json())
-    .catch(error => {
-      console.error(`Callback failed for ${endpoint}:`, error);
-      return null;
-    })
-  );
+  // Try all endpoints and return first successful result
+  let firstSuccessfulResult = null;
+  const results = [];
   
-  const results = await Promise.all(promises);
-  const successfulResult = results.find(r => r !== null);
-  
-  if (successfulResult) {
-    console.log('✅ Callback sent successfully:', successfulResult);
-  } else {
-    console.error('❌ All callback attempts failed');
+  for (const endpoint of endpoints) {
+    try {
+      console.log(`🔄 Trying callback endpoint: ${endpoint}`);
+      
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(data)
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        console.log(`✅ Callback successful at ${endpoint}:`, result);
+        results.push({ endpoint, success: true, result });
+        
+        // Store first successful result but continue trying other endpoints
+        if (!firstSuccessfulResult) {
+          firstSuccessfulResult = result;
+        }
+      } else {
+        console.log(`❌ Callback failed at ${endpoint}: ${response.status} ${response.statusText}`);
+        results.push({ endpoint, success: false, status: response.status });
+      }
+    } catch (error) {
+      console.error(`❌ Callback error at ${endpoint}:`, error);
+      results.push({ endpoint, success: false, error: error.message });
+    }
   }
   
-  return successfulResult;
+  // Log summary of all attempts
+  const successful = results.filter(r => r.success).length;
+  const failed = results.length - successful;
+  console.log(`📊 Callback summary: ${successful} successful, ${failed} failed out of ${results.length} endpoints`);
+  
+  if (firstSuccessfulResult) {
+    console.log('✅ Returning first successful result');
+    return firstSuccessfulResult;
+  } else {
+    console.log('❌ All callback endpoints failed');
+    return null;
+  }
 }
 
 // Function to send the token to the WordPress API using fetch
@@ -1489,8 +1507,8 @@ function sendTokenToAPI(extractedData, sourceUrl = "", userIdentifier = "", send
           });
         }
       } else {
-        const errorMessage = `Failed to send to all endpoints: ${failedResults.map(r => `${r.endpoint}: ${r.error}`).join(', ')}`;
-        logStatus(`Error: ${errorMessage}`, false);
+        // const errorMessage = `Failed to send to all endpoints: ${failedResults.map(r => `${r.endpoint}: ${r.error}`).join(', ')}`;
+        logStatus(`Error: Please retry`, false);
         
         if (sendResponse) {
           sendResponse({
