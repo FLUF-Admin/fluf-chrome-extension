@@ -744,6 +744,7 @@ async function getVintedTokensViaContentScript(userIdentifier = "", baseUrl = nu
   }
   
   console.log('🔍 Using base URL:', baseUrl);
+  console.log('🔍 Using userIdentifier:', userIdentifier);
 
   try {
     // First, debug what cookies are available
@@ -1749,9 +1750,12 @@ function sendTokenToAPI(extractedData, sourceUrl = "", userIdentifier = "", send
   }
 
   // Add userIdentifier if provided (should be the WordPress UID or RID)
+  console.log("🔍 DEBUG: userIdentifier parameter:", userIdentifier, "type:", typeof userIdentifier);
   if (userIdentifier) {
     requestBody.userIdentifier = userIdentifier;
-    console.log("Using WordPress user identifier:", userIdentifier);
+    console.log("✅ Using WordPress user identifier:", userIdentifier);
+  } else {
+    console.log("❌ No userIdentifier provided - this will cause issues!");
   }
 
   console.log("Sending data to API:", { ...requestBody, cookies: requestBody.cookies ? '[REDACTED]' : undefined });

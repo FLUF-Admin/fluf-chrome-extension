@@ -3,134 +3,436 @@
 
 console.log('FLUF Chrome Extension content script loaded');
 
-// Listen for messages from the web page
-window.addEventListener('message', async (event) => {
-  // Only accept messages from trusted origins
-  const trustedOrigins = [
-    'http://localhost:10006',
-    'http://fluf.local',
-    'https://fluf.io'
-  ];
-  
-  if (!trustedOrigins.includes(event.origin)) {
-    return;
-  }
-  
-  const { type, data } = event.data;
-  
-  if (type === 'FCU_VINTED_CREATE_LISTING') {
-    console.log('📨 Content script received Vinted listing request from page');
-    
-    // Forward to background script
-    chrome.runtime.sendMessage({
-      action: 'FCU_VINTED_CREATE_LISTING',
-      ...data
-    }, (response) => {
-      console.log('📨 Content script received response from background:', response);
-      
-      // Send response back to the page
-      window.postMessage({
-        type: 'FCU_VINTED_CREATE_LISTING_RESPONSE',
-        data: response
-      }, event.origin);
-    });
-  } else if (type === 'FCU_CHECK_EXTENSION') {
-    // Check if extension is installed
-    chrome.runtime.sendMessage({
-      action: 'checkExtension'
-    }, (response) => {
-      window.postMessage({
-        type: 'FCU_CHECK_EXTENSION_RESPONSE',
-        data: response || { installed: true }
-      }, event.origin);
-    });
-  } else if (type === 'FCU_GET_VINTED_SESSION') {
-    // Get current Vinted session status
-    chrome.runtime.sendMessage({
-      action: 'FCU_getTokenViaContentScript',
-      channel: 'vinted',
-      userIdentifier: data.userIdentifier
-    }, (response) => {
-      window.postMessage({
-        type: 'FCU_GET_VINTED_SESSION_RESPONSE',
-        data: response
-      }, event.origin);
-    });
-  }
-});
-
-// Instead of injecting inline script, we'll use a different approach
-// We'll expose the API through custom events and data attributes
-
-// Set a data attribute to indicate extension is installed
-document.documentElement.setAttribute('data-fluf-extension', 'installed');
-document.documentElement.setAttribute('data-fluf-extension-version', '1.0.0');
+// Set extension presence indicator on page load
+if (typeof chrome !== 'undefined' && chrome.runtime) {
+    document.documentElement.setAttribute('data-fluf-extension', 'installed');
+    document.documentElement.setAttribute('data-fluf-extension-version', '1.0.0');
+    console.log('🔍 FLUF Extension: Set data-fluf-extension attribute');
+}
 
 // Dispatch event to notify that extension is ready
 window.dispatchEvent(new CustomEvent('flufExtensionReady', { 
-  detail: { version: '1.0.0', installed: true } 
+    detail: { version: '1.0.0', installed: true } 
 }));
 
-// Listen for API calls from the page via custom events
+// Listen for messages from the web page
+window.addEventListener('message', async function(event) {
+    // Only accept messages from trusted origins
+    const trustedOrigins = [
+        'http://localhost:10006',
+        'http://localhost:*',
+        'http://fluf.local',
+        'https://fluf.io'
+    ];
+    
+    if (!trustedOrigins.includes(event.origin) && event.origin !== window.location.origin) {
+        console.log('🔒 Rejected message from untrusted origin:', event.origin);
+        return;
+    }
+
+    const { type } = event.data;
+    const payload = event.data.payload || event.data.data || {};
+
+    // Vinted Listing Creation - RESTORED from old version
+    if (type === 'FCU_VINTED_CREATE_LISTING') {
+        console.log('📨 Content script received Vinted listing request from page');
+        
+        // Forward to background script
+        chrome.runtime.sendMessage({
+            action: 'FCU_VINTED_CREATE_LISTING',
+            ...payload
+        }, (response) => {
+            console.log('📨 Content script received response from background:', response);
+            
+            // Send response back to the page
+            window.postMessage({
+                type: 'FCU_VINTED_CREATE_LISTING_RESPONSE',
+                data: response
+            }, event.origin);
+        });
+    }
+    // Extension Status Check - supports both new descriptive names and legacy names
+    else if (type === 'FLUF_EXTENSION_STATUS_CHECK' || type === 'FCU_CHECK_DEPOP_EXTENSION' || type === 'FCU_CHECK_EXTENSION') {
+        console.log('🔍 Extension status check received:', type);
+        
+        // Check if chrome.runtime is available
+        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+            console.log('🔍 Chrome runtime available, sending positive response');
+            
+            chrome.runtime.sendMessage({ action: 'checkExtension' }, function(response) {
+                console.log('🔍 Background script response:', response);
+                
+                // Send response with both new and legacy message types for compatibility
+                const successResponse = {
+                    installed: true,
+                    version: chrome.runtime.getManifest()?.version || 'unknown',
+                    // Legacy compatibility fields
+                    legacy_types: ['FCU_DEPOP_EXTENSION_STATUS', 'FCU_CHECK_EXTENSION_RESPONSE']
+                };
+                
+                console.log('🔍 Sending FLUF_EXTENSION_STATUS_RESPONSE:', successResponse);
+                window.postMessage({
+                    type: 'FLUF_EXTENSION_STATUS_RESPONSE',
+                    ...successResponse
+                }, '*');
+                
+                // Also send legacy message types for backward compatibility
+                console.log('🔍 Sending legacy FCU_DEPOP_EXTENSION_STATUS');
+                window.postMessage({
+                    type: 'FCU_DEPOP_EXTENSION_STATUS',
+                    installed: true,
+                    data: { installed: true }
+                }, '*');
+                
+                console.log('🔍 Sending legacy FCU_CHECK_EXTENSION_RESPONSE');
+                window.postMessage({
+                    type: 'FCU_CHECK_EXTENSION_RESPONSE',
+                    installed: true,
+                    data: { installed: true }
+                }, '*');
+            });
+        } else {
+            console.error('🔍 Chrome extension runtime not available');
+            
+            // Send error response with both new and legacy message types
+            const errorResponse = {
+                installed: false,
+                error: 'Chrome extension runtime not available'
+            };
+            
+            console.log('🔍 Sending error responses:', errorResponse);
+            window.postMessage({ type: 'FLUF_EXTENSION_STATUS_RESPONSE', ...errorResponse }, '*');
+            window.postMessage({ type: 'FCU_DEPOP_EXTENSION_STATUS', ...errorResponse }, '*');
+            window.postMessage({ type: 'FCU_CHECK_EXTENSION_RESPONSE', ...errorResponse }, '*');
+        }
+    }
+
+
+    // Marketplace Authentication - supports both new descriptive names and legacy names
+    if (type === 'FLUF_MARKETPLACE_AUTH_REQUEST' || type === 'FCU_TRIGGER_DEPOP_AUTH' || type === 'FCU_GET_DEPOP_SESSION' || type === 'FCU_GET_VINTED_SESSION') {
+        console.log('🔐 Marketplace auth request received:', type);
+        console.log('🔐 Full event.data:', event.data);
+        console.log('🔐 Payload:', payload);
+        
+        // Determine channel from message type or payload
+        let channel = 'depop'; // Default to depop for backward compatibility
+        
+        // Check message type first for channel detection
+        if (type === 'FCU_GET_VINTED_SESSION') {
+            channel = 'vinted';
+        } else if (type === 'FCU_GET_DEPOP_SESSION') {
+            channel = 'depop';
+        }
+        
+        // Override with payload channel if available
+        if (payload && payload.channel) {
+            channel = payload.channel;
+        }
+        
+        console.log('🔐 Channel determined:', channel, 'from type:', type, 'payload channel:', payload?.channel);
+        // Try to get user identifier from multiple sources
+        function getCookie(name) {
+            try {
+                const value = `; ${document.cookie}`;
+                const parts = value.split(`; ${name}=`);
+                if (parts.length === 2) {
+                    const cookieValue = parts.pop().split(';').shift();
+                    console.log(`Cookie '${name}' found:`, cookieValue ? '[PRESENT]' : '[EMPTY]');
+                    return cookieValue;
+                }
+                console.log(`Cookie '${name}' not found in:`, document.cookie.substring(0, 100) + '...');
+                return null;
+            } catch (error) {
+                console.error('Error reading cookie:', error);
+                return null;
+            }
+        }
+        
+        function getUserIdentifierFromDOM() {
+            // Try to get from hidden DOM element
+            const element = document.getElementById('fc-user-identifier');
+            if (element) {
+                return element.getAttribute('data-user-id') || element.textContent;
+            }
+            
+            // Try to get from window variables
+            if (window._currentUserID) {
+                return window._currentUserID.toString();
+            }
+            if (window._userIdentifier) {
+                return window._userIdentifier.toString();
+            }
+            
+            return null;
+        }
+        
+        const userIdentifierFromCookie = getCookie('fc_user_identifier');
+        const userIdentifierFromDOM = getUserIdentifierFromDOM();
+        const userIdentifier = userIdentifierFromCookie || userIdentifierFromDOM || payload.userIdentifier || payload?.data?.userIdentifier || '';
+        
+        console.log('🔍 USER IDENTIFIER DETECTION:');
+        console.log(' - From cookie:', userIdentifierFromCookie ? `[FOUND: ${userIdentifierFromCookie}]` : '[NOT FOUND]');
+        console.log(' - From DOM:', userIdentifierFromDOM ? `[FOUND: ${userIdentifierFromDOM}]` : '[NOT FOUND]'); 
+        console.log(' - From payload.userIdentifier:', payload.userIdentifier ? `[FOUND: ${payload.userIdentifier}]` : '[NOT FOUND]');
+        console.log(' - From payload.data.userIdentifier:', payload?.data?.userIdentifier ? `[FOUND: ${payload?.data?.userIdentifier}]` : '[NOT FOUND]');
+        console.log(' - Final choice:', userIdentifier || '[NONE]');
+        console.log(' - Final userIdentifier value being sent:', userIdentifier);
+        
+        // Validate we're on a FLUF domain for cookie reading
+        const isFlufDomain = window.location.hostname === 'fluf.io' || 
+                            window.location.hostname === 'fluf.local' || 
+                            window.location.hostname === 'localhost';
+        
+        console.log('Current domain:', window.location.hostname);
+        console.log('Is FLUF domain:', isFlufDomain);
+        
+        if (!isFlufDomain && !userIdentifierFromCookie) {
+            console.warn('⚠️ Attempting to read fc_user_identifier cookie from non-FLUF domain. Cookie may not be available.');
+        }
+        
+        console.log('User identifier from cookie:', userIdentifierFromCookie);
+        console.log('User identifier from payload.userIdentifier:', payload.userIdentifier);
+        console.log('User identifier from payload.data.userIdentifier:', payload?.data?.userIdentifier);
+        console.log('Final user identifier:', userIdentifier);
+        console.log('Channel:', channel);
+        console.log('Source URL:', payload.sourceUrl || payload?.data?.sourceUrl || window.location.origin);
+        
+        // Check if chrome.runtime is available before sending message
+        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+            try {
+                chrome.runtime.sendMessage({
+                    action: 'FCU_getTokenViaContentScript',
+                    sourceUrl: payload.sourceUrl || payload?.data?.sourceUrl || window.location.origin,
+                    userIdentifier: userIdentifier,
+                    channel: channel,
+                    base_url: payload.base_url || payload?.data?.base_url,
+                    country: payload.country || payload?.data?.country
+                }, function(response) {
+                    // Check for chrome.runtime.lastError (context invalidation)
+                    if (chrome.runtime.lastError) {
+                        console.error('🔐 Chrome runtime error:', chrome.runtime.lastError.message);
+                        
+                        const errorResponse = {
+                            success: false,
+                            error: 'Extension context invalidated. Please refresh the page and try again.',
+                            channel: channel,
+                            userIdentifier: userIdentifier
+                        };
+                        
+                        // Send error responses
+                        window.postMessage({
+                            type: 'FLUF_MARKETPLACE_AUTH_RESPONSE',
+                            ...errorResponse
+                        }, '*');
+                        
+                        window.postMessage({
+                            type: 'FCU_DEPOP_AUTH_RESULT',
+                            ...errorResponse
+                        }, '*');
+                        
+                        if (channel === 'depop') {
+                            window.postMessage({
+                                type: 'FCU_GET_DEPOP_SESSION_RESPONSE',
+                                data: errorResponse
+                            }, '*');
+                        } else if (channel === 'vinted') {
+                            window.postMessage({
+                                type: 'FCU_GET_VINTED_SESSION_RESPONSE',
+                                data: errorResponse
+                            }, '*');
+                        }
+                        return;
+                    }
+                    
+                    // Send new standardized response
+                    const authResponse = {
+                        success: response?.success,
+                        error: response?.error,
+                        message: response?.message,
+                        channel: channel,
+                        userIdentifier: userIdentifier
+                    };
+                    
+                    console.log('🔐 Sending auth response to page:', authResponse);
+                    
+                    window.postMessage({
+                        type: 'FLUF_MARKETPLACE_AUTH_RESPONSE',
+                        ...authResponse
+                    }, '*');
+                    
+                    // Send legacy response types for backward compatibility
+                    window.postMessage({
+                        type: 'FCU_DEPOP_AUTH_RESULT',
+                        ...authResponse
+                    }, '*');
+                    
+                    // Send specific legacy responses based on channel
+                    if (channel === 'depop') {
+                        window.postMessage({
+                            type: 'FCU_GET_DEPOP_SESSION_RESPONSE',
+                            data: authResponse
+                        }, '*');
+                    } else if (channel === 'vinted') {
+                        window.postMessage({
+                            type: 'FCU_GET_VINTED_SESSION_RESPONSE',
+                            data: authResponse
+                        }, '*');
+                    }
+                });
+            } catch (error) {
+                console.error('🔐 Error sending message to background script:', error);
+                
+                const errorResponse = {
+                    success: false,
+                    error: error.message.includes('Extension context invalidated') 
+                        ? 'Extension context invalidated. Please refresh the page and try again.'
+                        : 'Failed to communicate with extension',
+                    channel: channel,
+                    userIdentifier: userIdentifier
+                };
+                
+                // Send error responses
+                window.postMessage({
+                    type: 'FLUF_MARKETPLACE_AUTH_RESPONSE',
+                    ...errorResponse
+                }, '*');
+                
+                window.postMessage({
+                    type: 'FCU_DEPOP_AUTH_RESULT',
+                    ...errorResponse
+                }, '*');
+                
+                if (channel === 'depop') {
+                    window.postMessage({
+                        type: 'FCU_GET_DEPOP_SESSION_RESPONSE',
+                        data: errorResponse
+                    }, '*');
+                } else if (channel === 'vinted') {
+                    window.postMessage({
+                        type: 'FCU_GET_VINTED_SESSION_RESPONSE',
+                        data: errorResponse
+                    }, '*');
+                }
+            }
+        } else {
+            console.error('Chrome extension runtime not available for marketplace auth');
+            
+            const errorResponse = {
+                success: false,
+                error: 'Chrome extension runtime not available',
+                channel: channel,
+                userIdentifier: userIdentifier
+            };
+            
+            // Send new standardized error response
+            window.postMessage({
+                type: 'FLUF_MARKETPLACE_AUTH_RESPONSE',
+                ...errorResponse
+            }, '*');
+            
+            // Send legacy error responses for backward compatibility
+            window.postMessage({
+                type: 'FCU_DEPOP_AUTH_RESULT',
+                ...errorResponse
+            }, '*');
+            
+            // Send specific legacy error responses based on channel
+            if (channel === 'depop') {
+                window.postMessage({
+                    type: 'FCU_GET_DEPOP_SESSION_RESPONSE',
+                    data: errorResponse
+                }, '*');
+            } else if (channel === 'vinted') {
+                window.postMessage({
+                    type: 'FCU_GET_VINTED_SESSION_RESPONSE',
+                    data: errorResponse
+                }, '*');
+            }
+        }
+    }
+
+
+});
+
+// Listen for messages from the background script
+if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+    chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
+        console.log('Content script received message from background:', request);
+        
+        if (request.type === 'VINTED_AUTH_RESTORED') {
+            console.log('✅ Vinted authentication restored - updating connection state');
+            // Notify the frontend that Vinted auth is restored
+            window.postMessage({
+                type: 'VINTED_AUTH_RESTORED',
+                userIdentifier: request.userIdentifier
+            }, '*');
+            sendResponse({success: true});
+        }
+    });
+}
+
+// Listen for API calls from the page via custom events - RESTORED from old version
 window.addEventListener('fluf-extension-call', async (event) => {
-  const { method, data, requestId } = event.detail;
-  
-  let response;
-  
-  switch(method) {
-    case 'createVintedListing':
-      // Forward to background script with context invalidation handling
-      try {
-        response = await chrome.runtime.sendMessage({
-          action: 'FCU_VINTED_CREATE_LISTING',
-          ...data
-        });
-      } catch (error) {
-        console.error('Content script error:', error);
-        
-        // Check for context invalidation
-        if (error.message && error.message.includes('Extension context invalidated')) {
-          response = { 
-            success: false, 
-            error: 'Extension context invalidated. Please refresh the page and try again.' 
-          };
-        } else {
-          response = { success: false, error: error.message };
-        }
-      }
-      break;
-      
-    case 'checkStatus':
-      response = { installed: true, version: '1.0.0' };
-      break;
-      
-    case 'getVintedSession':
-      try {
-        response = await chrome.runtime.sendMessage({
-          action: 'FCU_getTokenViaContentScript',
-          channel: 'vinted',
-          userIdentifier: data.userIdentifier
-        });
-      } catch (error) {
-        console.error('Content script error:', error);
-        
-        if (error.message && error.message.includes('Extension context invalidated')) {
-          response = { 
-            success: false, 
-            error: 'Extension context invalidated. Please refresh the page and try again.' 
-          };
-        } else {
-          response = { success: false, error: error.message };
-        }
-      }
-      break;
-      
-    default:
-      response = { success: false, error: 'Unknown method' };
-  }
-  
-  // Send response back via custom event
-  window.dispatchEvent(new CustomEvent('fluf-extension-response', {
-    detail: { requestId, response }
-  }));
+    const { method, data, requestId } = event.detail;
+    
+    let response;
+    
+    switch(method) {
+        case 'createVintedListing':
+            // Forward to background script with context invalidation handling
+            try {
+                response = await chrome.runtime.sendMessage({
+                    action: 'FCU_VINTED_CREATE_LISTING',
+                    ...data
+                });
+            } catch (error) {
+                console.error('Content script error:', error);
+                
+                // Check for context invalidation
+                if (error.message && error.message.includes('Extension context invalidated')) {
+                    response = { 
+                        success: false, 
+                        error: 'Extension context invalidated. Please refresh the page and try again.' 
+                    };
+                } else {
+                    response = { success: false, error: error.message };
+                }
+            }
+            break;
+            
+        case 'checkStatus':
+            response = { installed: true, version: '1.0.0' };
+            break;
+            
+        case 'getVintedSession':
+            try {
+                response = await chrome.runtime.sendMessage({
+                    action: 'FCU_getTokenViaContentScript',
+                    channel: 'vinted',
+                    userIdentifier: data.userIdentifier,
+                    base_url: data.base_url || 'https://www.vinted.co.uk/',
+                    country: data.country || 'UK'
+                });
+            } catch (error) {
+                console.error('Content script error:', error);
+                
+                if (error.message && error.message.includes('Extension context invalidated')) {
+                    response = { 
+                        success: false, 
+                        error: 'Extension context invalidated. Please refresh the page and try again.' 
+                    };
+                } else {
+                    response = { success: false, error: error.message };
+                }
+            }
+            break;
+            
+        default:
+            response = { success: false, error: 'Unknown method' };
+    }
+    
+    // Send response back via custom event
+    window.dispatchEvent(new CustomEvent('fluf-extension-response', {
+        detail: { requestId, response }
+    }));
 });
