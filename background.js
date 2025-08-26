@@ -183,9 +183,72 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "FCU_checkDepop") {
     getDepopTokensDirectly();
   } else if (alarm.name === "FCU_checkVinted") {
-    getVintedTokensDirectly();
+    handleVintedAlarmCheck();
   }
 });
+
+// Enhanced Vinted alarm handler with coordination
+async function handleVintedAlarmCheck() {
+  console.log('🔔 VINTED ALARM: Checking if refresh is needed...');
+  
+  try {
+    // Check when the last frontend refresh occurred
+    const storage = await chrome.storage.local.get(['vinted_last_frontend_refresh']);
+    const lastFrontendRefresh = storage.vinted_last_frontend_refresh || 0;
+    const timeSinceLastFrontendRefresh = Date.now() - lastFrontendRefresh;
+    
+    // If frontend refreshed within the last 15 minutes, skip this alarm
+    const FRONTEND_GRACE_PERIOD = 15 * 60 * 1000; // 15 minutes
+    
+    if (timeSinceLastFrontendRefresh < FRONTEND_GRACE_PERIOD) {
+      console.log('🔔 VINTED ALARM: Skipping - frontend refreshed', Math.round(timeSinceLastFrontendRefresh / 60000), 'minutes ago');
+      
+      // Reset the alarm to fire after the remaining grace period
+      const remainingGracePeriod = FRONTEND_GRACE_PERIOD - timeSinceLastFrontendRefresh;
+      const nextAlarmDelay = Math.max(remainingGracePeriod + (5 * 60 * 1000), 10 * 60 * 1000); // At least 10 minutes
+      
+      console.log('🔔 VINTED ALARM: Rescheduling alarm for', Math.round(nextAlarmDelay / 60000), 'minutes from now');
+      
+      // Clear existing alarm and create new one with adjusted timing
+      chrome.alarms.clear("FCU_checkVinted");
+      chrome.alarms.create("FCU_checkVinted", { 
+        delayInMinutes: nextAlarmDelay / 60000,
+        periodInMinutes: 20 // Resume normal 20-minute interval after this
+      });
+      
+      return;
+    }
+    
+    console.log('🔔 VINTED ALARM: Proceeding with scheduled check');
+    getVintedTokensDirectly();
+    
+  } catch (error) {
+    console.error('🔔 VINTED ALARM: Error checking coordination:', error);
+    // Fallback to normal check if coordination fails
+    getVintedTokensDirectly();
+  }
+}
+
+// Function to get Vinted coordination status (for debugging)
+async function getVintedCoordinationStatus() {
+  try {
+    const storage = await chrome.storage.local.get(['vinted_last_frontend_refresh']);
+    const lastFrontendRefresh = storage.vinted_last_frontend_refresh || 0;
+    const timeSinceLastRefresh = Date.now() - lastFrontendRefresh;
+    
+    const alarms = await chrome.alarms.getAll();
+    const vintedAlarm = alarms.find(alarm => alarm.name === "FCU_checkVinted");
+    
+    return {
+      lastFrontendRefresh: new Date(lastFrontendRefresh).toISOString(),
+      timeSinceLastRefresh: Math.round(timeSinceLastRefresh / 60000), // minutes
+      nextAlarmTime: vintedAlarm ? new Date(vintedAlarm.scheduledTime).toISOString() : 'No alarm scheduled',
+      alarmPeriod: vintedAlarm ? vintedAlarm.periodInMinutes : 'N/A'
+    };
+  } catch (error) {
+    return { error: error.message };
+  }
+}
 
 // WebRequest listener to capture Vinted cookies from XHR requests (specific domain only)
 chrome.webRequest.onBeforeSendHeaders.addListener(
@@ -769,7 +832,7 @@ async function getVintedTokensViaContentScript(userIdentifier = "", baseUrl = nu
       console.groupEnd();
       return {
         success: false,
-        error: 'Could not extract authentication token. Please visit ' + baseUrl.replace(/\/$/, '') + '/items/new in your browser first, then try connecting again.'
+        error: 'Please refresh Session by visiting ' + baseUrl.replace(/\/$/, '') + '/items/new, then try connecting again.'
       };
     }
 
@@ -1333,6 +1396,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   } else if (request.action === "checkExtension") {
     // Simple extension check - just respond that we're here
     sendResponse({ installed: true });
+  } else if (request.action === "FCU_getVintedCoordinationStatus") {
+    // Get Vinted coordination status for debugging
+    getVintedCoordinationStatus().then(status => {
+      sendResponse(status);
+    }).catch(error => {
+      sendResponse({ error: error.message });
+    });
+    return true; // Keep message channel open for async response
   } else if (request.action === "FCU_VINTED_CREATE_LISTING") {
     // Handle Vinted listing creation from FLUF backend
     console.log("🚀 VINTED LISTING: Received create listing request from FLUF");
@@ -1362,6 +1433,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       const baseUrl = request.base_url; // Don't provide default here, let the function handle it
 
       console.log('🟣 Processing Vinted auth request with baseUrl:', baseUrl);
+      
+      // Record frontend refresh timestamp for alarm coordination
+      chrome.storage.local.set({ 
+        vinted_last_frontend_refresh: Date.now() 
+      });
+      console.log('🔔 VINTED COORDINATION: Recorded frontend refresh timestamp');
+      
       getVintedTokensViaContentScript(request.userIdentifier, baseUrl).then(result => {
         console.log('🟣 Vinted auth result:', result);
         const response = {

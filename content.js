@@ -106,6 +106,37 @@ window.addEventListener('message', async function(event) {
             window.postMessage({ type: 'FCU_CHECK_EXTENSION_RESPONSE', ...errorResponse }, '*');
         }
     }
+    
+    // Vinted coordination status check
+    else if (type === 'FCU_GET_VINTED_COORDINATION_STATUS') {
+        console.log('🔔 Vinted coordination status check requested');
+        
+        try {
+            chrome.runtime.sendMessage({
+                action: 'FCU_getVintedCoordinationStatus'
+            }, (response) => {
+                if (chrome.runtime.lastError) {
+                    console.error('🔔 Extension context error:', chrome.runtime.lastError.message);
+                    window.postMessage({
+                        type: 'FCU_VINTED_COORDINATION_STATUS_RESPONSE',
+                        data: { error: 'Extension context invalidated' }
+                    }, '*');
+                } else {
+                    console.log('🔔 Coordination status response:', response);
+                    window.postMessage({
+                        type: 'FCU_VINTED_COORDINATION_STATUS_RESPONSE',
+                        data: response
+                    }, '*');
+                }
+            });
+        } catch (error) {
+            console.error('🔔 Error requesting coordination status:', error);
+            window.postMessage({
+                type: 'FCU_VINTED_COORDINATION_STATUS_RESPONSE',
+                data: { error: error.message }
+            }, '*');
+        }
+    }
 
 
     // Marketplace Authentication - supports both new descriptive names and legacy names
