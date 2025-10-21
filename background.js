@@ -1,7 +1,7 @@
 // Endpoints - send to localhost, local development, and production
 const ENDPOINTS = [
-  // "http://localhost:10007/wp-json/fc/circular-auth/v1/token",
-  // "http://fluf.local/wp-json/fc/circular-auth/v1/token",
+  "http://localhost:10007/wp-json/fc/circular-auth/v1/token",
+  "http://fluf.local/wp-json/fc/circular-auth/v1/token",
   "https://fluf.io/wp-json/fc/circular-auth/v1/token"
 ];
 
@@ -400,13 +400,14 @@ const VINTED_DEBUGGER_COOLDOWN = 15 * 60 * 1000; // 15 minutes in milliseconds
 
 // Debug logging function
 function debugLog(...args) {
-  if (debugModeEnabled) {
+  // if (debugModeEnabled) {
     console.log(...args);
-  }
+  // }
 }
 
 // Check debug mode from FLUF web app (simple version)
 async function checkDebugMode() {
+  return true;
   if (debugModeCheckPromise) {
     return debugModeCheckPromise;
   }
@@ -488,8 +489,8 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
     }
   }
   
-  // Check global coordination to prevent multiple instances across windows
-  if (globalVintedExtractionInProgress) {
+  // Check global coordination to prevent multiple instances across windows (unless manually triggered)
+  if (globalVintedExtractionInProgress && !isManualTrigger) {
     debugLog('🔒 VINTED: Global extraction already in progress in another window, skipping...');
     return {
       success: false,
@@ -498,8 +499,13 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
     };
   }
   
-  // Check if authentication is already in progress
-  if (vintedCookiesExtractionLock) {
+  // For manual triggers, allow bypassing the global lock
+  if (globalVintedExtractionInProgress && isManualTrigger) {
+    debugLog('🔓 VINTED: Manual trigger detected - bypassing global coordination lock');
+  }
+  
+  // Check if authentication is already in progress (unless manually triggered)
+  if (vintedCookiesExtractionLock && !isManualTrigger) {
     debugLog('🔒 VINTED: Authentication already in progress, waiting...');
     
     // Wait for the current authentication to complete
@@ -508,6 +514,11 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
     }
     
     debugLog('🔓 VINTED: Previous authentication completed, retrying...');
+  }
+  
+  // For manual triggers, allow bypassing the local lock
+  if (vintedCookiesExtractionLock && isManualTrigger) {
+    debugLog('🔓 VINTED: Manual trigger detected - bypassing local authentication lock');
   }
   
   // Set locks
