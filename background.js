@@ -390,7 +390,7 @@ let lastVintedAuthAttempt = 0;
 const VINTED_AUTH_DEBOUNCE_MS = 3000; // 3 seconds
 
 // Debug mode management
-let debugModeEnabled = false;
+let debugModeEnabled = true;
 let debugModeChecked = false;
 let debugModeCheckPromise = null;
 
@@ -550,7 +550,7 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
         setTimeout(() => {
           chrome.tabs.onUpdated.removeListener(listener);
           resolve();
-        }, 30000); // 30 second timeout for session refresh
+        }, 90000); // 90 second timeout for session refresh
       });
       
       debugLog('✅ Existing Vinted tab refreshed and loaded');
@@ -579,7 +579,7 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
         setTimeout(() => {
           chrome.tabs.onUpdated.removeListener(listener);
           resolve();
-        }, 30000); // 30 second timeout for session refresh
+        }, 90000); // 90 second timeout for session refresh
       });
       
       debugLog('✅ New Vinted tab loaded');
@@ -590,10 +590,22 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
     // Step 3: Extract cookies using chrome.cookies.getAll (more reliable than DevTools)
     debugLog('🍪 VINTED: Extracting cookies using chrome.cookies.getAll...');
     
+    // Check if chrome.cookies API is available
+    if (!chrome.cookies || !chrome.cookies.getAll) {
+      throw new Error('chrome.cookies.getAll API not available. Extension may need cookies permission.');
+    }
+    
     const targetDomain = new URL(baseUrl).hostname;
-    const vintedCookies = await chrome.cookies.getAll({
-      domain: targetDomain
-    });
+    let vintedCookies;
+    
+    try {
+      vintedCookies = await chrome.cookies.getAll({
+        domain: targetDomain
+      });
+    } catch (cookieError) {
+      debugLog('❌ VINTED: Error accessing cookies:', cookieError);
+      throw new Error('Failed to access cookies. Extension may need cookies permission: ' + cookieError.message);
+    }
     
     debugLog(`📊 VINTED: Found ${vintedCookies.length} cookies for domain ${targetDomain}`);
     
@@ -661,13 +673,19 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
             setTimeout(() => {
               chrome.tabs.onUpdated.removeListener(listener);
               resolve();
-            }, 30000); // 30 second timeout
+            }, 90000); // 90 second timeout
           });
           
           // Try extracting cookies again
-          const retryCookies = await chrome.cookies.getAll({
-            domain: targetDomain
-          });
+          let retryCookies;
+          try {
+            retryCookies = await chrome.cookies.getAll({
+              domain: targetDomain
+            });
+          } catch (retryCookieError) {
+            debugLog(`❌ VINTED: Error accessing cookies on retry ${attempt}:`, retryCookieError);
+            continue; // Skip this retry attempt
+          }
           
           const retryAccessTokenWeb = retryCookies.find(c => c.name === 'access_token_web');
           
