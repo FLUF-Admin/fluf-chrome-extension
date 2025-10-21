@@ -1,7 +1,7 @@
 // Endpoints - send to localhost, local development, and production
 const ENDPOINTS = [
-  "http://localhost:10006/wp-json/fc/circular-auth/v1/token",
-  "http://fluf.local/wp-json/fc/circular-auth/v1/token",
+  // "http://localhost:10007/wp-json/fc/circular-auth/v1/token",
+  // "http://fluf.local/wp-json/fc/circular-auth/v1/token",
   "https://fluf.io/wp-json/fc/circular-auth/v1/token"
 ];
 
@@ -96,7 +96,7 @@ function getCountryFromVintedUrl(baseUrl) {
 // Function to get user's country from IP using ipapi.co
 async function getUserCountryFromIP() {
   try {
-    console.log('🌍 Detecting user country from IP...');
+    debugLog('🌍 Detecting user country from IP...');
     const response = await fetch('https://ipapi.co/country_code/', {
       method: 'GET',
       headers: {
@@ -106,10 +106,10 @@ async function getUserCountryFromIP() {
     
     if (response.ok) {
       const countryCode = (await response.text()).trim().toUpperCase();
-      console.log('🌍 Detected country code:', countryCode);
+      debugLog('🌍 Detected country code:', countryCode);
       return countryCode;
     } else {
-      console.log('❌ IP detection failed, using default');
+      debugLog('❌ IP detection failed, using default');
       return 'DEFAULT';
     }
   } catch (error) {
@@ -124,18 +124,18 @@ async function getVintedDomainPreference() {
     // First check if we have a stored preference
     const stored = await chrome.storage.local.get(['vinted_domain_preference']);
     if (stored.vinted_domain_preference) {
-      console.log('✅ Using stored Vinted domain preference:', stored.vinted_domain_preference);
+      debugLog('✅ Using stored Vinted domain preference:', stored.vinted_domain_preference);
       return stored.vinted_domain_preference;
     }
     
     // If no stored preference, detect from IP
-    console.log('🔍 No stored Vinted domain preference, detecting from IP...');
+    debugLog('🔍 No stored Vinted domain preference, detecting from IP...');
     const countryCode = await getUserCountryFromIP();
     const detectedDomain = COUNTRY_TO_VINTED_DOMAIN[countryCode] || COUNTRY_TO_VINTED_DOMAIN['DEFAULT'];
     
     // Store the detected domain for future use
     await chrome.storage.local.set({ vinted_domain_preference: detectedDomain });
-    console.log('💾 Stored detected Vinted domain preference:', detectedDomain);
+    debugLog('💾 Stored detected Vinted domain preference:', detectedDomain);
     
     return detectedDomain;
   } catch (error) {
@@ -148,7 +148,7 @@ async function getVintedDomainPreference() {
 async function updateVintedDomainPreference(baseUrl) {
   try {
     await chrome.storage.local.set({ vinted_domain_preference: baseUrl });
-    console.log('💾 Updated Vinted domain preference:', baseUrl);
+    debugLog('💾 Updated Vinted domain preference:', baseUrl);
   } catch (error) {
     console.error('❌ Error updating Vinted domain preference:', error);
   }
@@ -156,7 +156,7 @@ async function updateVintedDomainPreference(baseUrl) {
 
 // Initialize the extension when installed or updated
 chrome.runtime.onInstalled.addListener((details) => {
-  console.log('Extension installed/updated:', details.reason);
+  debugLog('Extension installed/updated:', details.reason);
 
   // Set up separate alarms for each platform
   chrome.alarms.create("FCU_checkDepop", { periodInMinutes: 360 }); // Every 6 hours
@@ -168,15 +168,33 @@ chrome.runtime.onInstalled.addListener((details) => {
 
 // Direct extraction functions for scheduled checks
 async function getDepopTokensDirectly() {
-  console.log('🔄 SCHEDULED DEPOP CHECK');
+  debugLog('🔄 SCHEDULED DEPOP CHECK');
   return await getDepopTokensViaContentScript();
 }
 
 async function getVintedTokensDirectly() {
-  console.log('🔄 SCHEDULED VINTED CHECK');
+  debugLog('🔄 SCHEDULED VINTED CHECK');
   // Use stored domain preference for scheduled checks
   return await getVintedTokensViaContentScript();
 }
+
+// Initialize debug mode when extension starts
+initializeDebugMode();
+
+// Check debug mode periodically (every 30 seconds)
+chrome.alarms.create("FCU_checkDebugMode", { periodInMinutes: 0.5 }); // Every 30 seconds
+
+// Listen for messages from content scripts
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'setDebugMode') {
+    // Direct debug mode setting from web app
+    debugModeEnabled = request.enabled;
+    debugModeChecked = true;
+    debugLog('🔧 Debug mode directly set to:', debugModeEnabled ? 'ENABLED' : 'DISABLED');
+    sendResponse({ success: true, debugEnabled: debugModeEnabled });
+    return true;
+  }
+});
 
 // Listen for the alarms to trigger
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -184,12 +202,22 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     getDepopTokensDirectly();
   } else if (alarm.name === "FCU_checkVinted") {
     handleVintedAlarmCheck();
+  } else if (alarm.name === "FCU_checkDebugMode") {
+    // Reset the debug mode check promise to force a fresh check
+    debugModeCheckPromise = null;
+    debugModeChecked = false;
+    checkDebugMode().then((enabled) => {
+      if (enabled !== debugModeEnabled) {
+        debugModeEnabled = enabled;
+        debugLog('🔧 Debug mode changed to:', enabled ? 'ENABLED' : 'DISABLED');
+      }
+    });
   }
 });
 
 // Enhanced Vinted alarm handler with coordination
 async function handleVintedAlarmCheck() {
-  console.log('🔔 VINTED ALARM: Checking if refresh is needed...');
+  debugLog('🔔 VINTED ALARM: Checking if refresh is needed...');
   
   try {
     // Check when the last frontend refresh occurred
@@ -201,13 +229,13 @@ async function handleVintedAlarmCheck() {
     const FRONTEND_GRACE_PERIOD = 15 * 60 * 1000; // 15 minutes
     
     if (timeSinceLastFrontendRefresh < FRONTEND_GRACE_PERIOD) {
-      console.log('🔔 VINTED ALARM: Skipping - frontend refreshed', Math.round(timeSinceLastFrontendRefresh / 60000), 'minutes ago');
+      debugLog('🔔 VINTED ALARM: Skipping - frontend refreshed', Math.round(timeSinceLastFrontendRefresh / 60000), 'minutes ago');
       
       // Reset the alarm to fire after the remaining grace period
       const remainingGracePeriod = FRONTEND_GRACE_PERIOD - timeSinceLastFrontendRefresh;
       const nextAlarmDelay = Math.max(remainingGracePeriod + (5 * 60 * 1000), 10 * 60 * 1000); // At least 10 minutes
       
-      console.log('🔔 VINTED ALARM: Rescheduling alarm for', Math.round(nextAlarmDelay / 60000), 'minutes from now');
+      debugLog('🔔 VINTED ALARM: Rescheduling alarm for', Math.round(nextAlarmDelay / 60000), 'minutes from now');
       
       // Clear existing alarm and create new one with adjusted timing
       chrome.alarms.clear("FCU_checkVinted");
@@ -219,7 +247,7 @@ async function handleVintedAlarmCheck() {
       return;
     }
     
-    console.log('🔔 VINTED ALARM: Proceeding with scheduled check');
+    debugLog('🔔 VINTED ALARM: Proceeding with scheduled check');
     getVintedTokensDirectly();
     
   } catch (error) {
@@ -264,7 +292,7 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
     );
 
     if (cookieHeader && cookieHeader.value) {
-      console.log('🍪 VINTED XHR COOKIES CAPTURED:', cookieHeader.value.length, 'chars');
+      debugLog('🍪 VINTED XHR COOKIES CAPTURED:', cookieHeader.value.length, 'chars');
 
       // Store the captured cookies for later use
       chrome.storage.local.set({
@@ -314,7 +342,7 @@ chrome.webRequest.onHeadersReceived.addListener(
     );
 
     if (setCookieHeaders.length > 0) {
-      console.log('🍪 VINTED SET-COOKIE HEADERS CAPTURED:', setCookieHeaders.length, 'headers');
+      debugLog('🍪 VINTED SET-COOKIE HEADERS CAPTURED:', setCookieHeaders.length, 'headers');
     }
   },
   { urls: VINTED_DOMAINS.map(domain => `*://${domain}/*`) },
@@ -344,517 +372,469 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
     );
 
     if (cookieHeader && cookieHeader.value) {
-      console.log('🔍 API CALL cookies captured from:', details.url);
+      debugLog('🔍 API CALL cookies captured from:', details.url);
     }
   },
   { urls: VINTED_DOMAINS.map(domain => `*://${domain}/*`) },
   ["requestHeaders"]
 );
 
-// Function to get complete Vinted cookie string
-async function getVintedHeadersCookies(baseUrl = 'https://www.vinted.co.uk/') {
-  try {
-    
-    // Extract hostname from baseUrl to target the specific Vinted domain
-    const targetUrl = new URL(baseUrl);
-    const targetDomain = targetUrl.hostname;
-    
-    console.log('🎯 Targeting specific Vinted domain:', targetDomain);
-    
-    // Build domain variations for the specific country
-    const domains = [
-      baseUrl.replace(/\/$/, ''), // https://www.vinted.co.uk
-      `https://${targetDomain}`, // https://www.vinted.co.uk  
-    ];
-    
-    // If it's a www domain, also try without www
-    if (targetDomain.startsWith('www.')) {
-      const nonWwwDomain = targetDomain.replace('www.', '');
-      domains.push(`https://${nonWwwDomain}`); // https://vinted.co.uk
-      domains.push(`https://.${nonWwwDomain}`); // https://.vinted.co.uk
-    }
-    
-    console.log('🔍 Checking domains for cookies:', domains);
-    
-    let allCookies = [];
-    
-    for (const domain of domains) {
-      try {
-        const cookies = await chrome.cookies.getAll({ url: domain });
-        if (cookies.length > 0) {
-          console.log(`✅ Found ${cookies.length} cookies for domain: ${domain}`);
-          allCookies = allCookies.concat(cookies);
-        } else {
-          console.log(`❌ No cookies found for domain: ${domain}`);
-        }
-      } catch (error) {
-        console.log(`⚠️ Error getting cookies for domain ${domain}:`, error.message);
-      }
-    }
-    
-    // Remove duplicates based on name and domain
-    const uniqueCookies = [];
-    const seen = new Set();
-    
-    allCookies.forEach(cookie => {
-      const key = `${cookie.name}:${cookie.domain}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        uniqueCookies.push(cookie);
-      }
-    });
-    
-    const cookieString = uniqueCookies.map((c) => `${c.name}=${c.value}`).join('; ');
-    
-    console.log('🍪 VINTED COOKIES for', targetDomain + ':', uniqueCookies.length, 'cookies,', cookieString.length, 'chars');
-    
-    return cookieString;
-  } catch (error) {
-    console.error('Error collecting Vinted cookies:', error);
-    throw error;
+// Lock to prevent multiple concurrent calls to getVintedCookiesWithDevTools
+let vintedCookiesExtractionLock = false;
+
+// Global coordination to prevent multiple instances across windows
+let globalVintedExtractionInProgress = false;
+
+// Track last Vinted auth attempt to prevent rapid duplicates
+let lastVintedAuthAttempt = 0;
+const VINTED_AUTH_DEBOUNCE_MS = 3000; // 3 seconds
+
+// Debug mode management
+let debugModeEnabled = false;
+let debugModeChecked = false;
+let debugModeCheckPromise = null;
+
+// Rate limiting for Vinted cookie extraction
+let lastVintedDebuggerCheck = 0;
+const VINTED_DEBUGGER_COOLDOWN = 15 * 60 * 1000; // 15 minutes in milliseconds
+
+// Debug logging function
+function debugLog(...args) {
+  if (debugModeEnabled) {
+    console.log(...args);
   }
 }
 
-// Function to extract Vinted CSRF token from /items/new page
-async function getVintedCSRFFromItemsNewWithCookies(cookieHeader, baseUrl = 'https://www.vinted.co.uk/') {
-  try {
-    console.log('🔍 Extracting CSRF token from /items/new...');
-    console.log('🔍 Using base URL:', baseUrl);
-
-    // Request the /items/new page with the complete cookie string
-    const response = await fetch(baseUrl + 'items/new', {
-      method: 'GET',
-      headers: {
-        Cookie: cookieHeader,
-        'User-Agent': navigator.userAgent,
-        Referer: baseUrl,
-        Origin: baseUrl.replace(/\/$/, ''),
-        Accept: 'text/html',
-      },
-      redirect: 'manual',
-    });
-
-    console.log('📡 /items/new response status:', response.status);
-
-    if (response.status === 200) {
-      const html = await response.text();
-
-      // Use Zipsale's exact pattern
-      const match = html.match(/\\"CSRF_TOKEN\\":\\"([^"]+)\\"/);
-      const csrfToken = match ? match[1] : null;
-      const anonId = response.headers.get('x-anon-id');
-
-      // Extract Vinted username from figure img alt attribute
-      let vintedUsername = null;
-
-      // Try multiple patterns to extract the username from HTML
-      // Pattern 1: Look for figure with class "header-avatar" containing img with alt
-      let usernameMatch = html.match(/<figure[^>]*class="[^"]*header-avatar[^"]*"[^>]*>[\s\S]*?<img[^>]*alt="([^"]+)"[^>]*>/i);
-
-      // Pattern 2: Basic figure img alt attribute  
-      if (!usernameMatch) {
-        usernameMatch = html.match(/<figure[^>]*>\s*<img[^>]*alt="([^"]+)"[^>]*>/i);
-      }
-
-      // Pattern 3: Look for img with alt inside any figure (more flexible)
-      if (!usernameMatch) {
-        usernameMatch = html.match(/<figure[^>]*>[\s\S]*?<img[^>]*alt="([^"]+)"[^>]*>[\s\S]*?<\/figure>/i);
-      }
-
-      // Pattern 4: Look for div with header-avatar class containing img
-      if (!usernameMatch) {
-        usernameMatch = html.match(/<div[^>]*class="[^"]*header-avatar[^"]*"[^>]*>[\s\S]*?<img[^>]*alt="([^"]+)"[^>]*>/i);
-      }
-
-      // Pattern 5: Look for any img with class containing "avatar" or "user"
-      if (!usernameMatch) {
-        usernameMatch = html.match(/<img[^>]*class="[^"]*(?:avatar|user)[^"]*"[^>]*alt="([^"]+)"[^>]*>/i);
-      }
-
-      // Pattern 6: Look for username in data attributes or specific patterns
-      if (!usernameMatch) {
-        usernameMatch = html.match(/data-username="([^"]+)"/i);
-      }
-
-      // Pattern 7: Look for any img with alt that looks like a username (no spaces, alphanumeric)
-      if (!usernameMatch) {
-        const allImgMatches = html.match(/<img[^>]*alt="([a-zA-Z0-9_.-]+)"[^>]*/gi);
-        if (allImgMatches) {
-          for (const imgMatch of allImgMatches) {
-            const altMatch = imgMatch.match(/alt="([a-zA-Z0-9_.-]+)"/);
-            if (altMatch && altMatch[1] && altMatch[1].length > 3 && !altMatch[1].includes(' ')) {
-              usernameMatch = altMatch;
-              break;
-            }
-          }
-        }
-      }
-
-      if (usernameMatch) {
-        vintedUsername = usernameMatch[1];
-        console.log('✅ Vinted username extracted:', vintedUsername);
-      } else {
-        console.log('❌ Vinted username not found in HTML - trying alternative methods...');
-
-        // Log a sample of the HTML around figure tags for debugging
-        const figureMatch = html.match(/<figure[\s\S]{0,200}>/i);
-        if (figureMatch) {
-          console.log('🔍 Sample figure HTML found:', figureMatch[0]);
-        }
-
-        // Look for any img tags with alt attributes for debugging
-        const allImgAlts = html.match(/<img[^>]*alt="([^"]+)"[^>]*/gi);
-        if (allImgAlts) {
-          console.log('🔍 All img alt attributes found:', allImgAlts.slice(0, 5)); // Show first 5
-        }
-      }
-
-      if (csrfToken) {
-        console.log('✅ CSRF token extracted successfully');
-        return { csrfToken, anonId, vintedUsername };
-      } else {
-        console.log('❌ CSRF token not found in HTML response');
-
-        // Try alternative patterns
-        const altMatch = html.match(/CSRF_TOKEN["\s]*:["\s]*"([^"]+)"/);
-        if (altMatch) {
-          console.log('✅ Found CSRF token with alternative pattern');
-          return { csrfToken: altMatch[1], anonId, vintedUsername };
-        }
-      }
-    } else if (response.status === 307 || response.status === 401) {
-      console.log('❌ Session expired or not authenticated (status:', response.status, ')');
-      return null;
-    } else {
-      console.log('❌ Unexpected response status:', response.status);
-    }
-
-  } catch (error) {
-    console.error('💥 Error fetching CSRF from /items/new:', error);
-    return null;
+// Check debug mode from FLUF web app (simple version)
+async function checkDebugMode() {
+  if (debugModeCheckPromise) {
+    return debugModeCheckPromise;
   }
-
-  return null;
-}
-
-
-// Function to get Vinted CSRF token using Zipsale's exact method (direct fetch)
-async function getVintedCSRFTokenZipsaleStyle(baseUrl = 'https://www.vinted.co.uk/') {
-  console.log('🔍 Using base URL:', baseUrl);
-
-  // Normalize baseUrl: remove trailing slash to match Zipsale's format
-  const normalizedUrl = baseUrl.replace(/\/$/, '');
-
-  let response, status, redirectUrl;
   
-  // Step 1: Request CSRF token (like Zipsale's requestVintedCSRFToken)
-  try {
-    const cookieHeader = await getVintedHeadersCookies(baseUrl);
-    
-    if (!cookieHeader || cookieHeader.length === 0) {
-      console.log('❌ No Vinted cookies found - user needs to log in first');
-      return { csrfToken: null, anonId: null, status: 401 };
-    }
-
-    response = await fetch(normalizedUrl + '/items/new', {
-      method: 'GET',
-      headers: {
-        Cookie: cookieHeader,
-        'User-Agent': navigator.userAgent,
-        Referer: normalizedUrl,
-        Origin: normalizedUrl,
-        Accept: 'text/html',
-      },
-      redirect: 'manual', // Key: prevent automatic redirects like Zipsale
-    });
-
-    status = response.status;
-    console.log('📡 /items/new response status:', status);
-
-    // Check for status 0 with redirect info (like Zipsale)
-    if (status === 0) {
-      await new Promise((resolve) => setTimeout(resolve, 300));
-
-      if (lastRequestInfo && lastRequestInfo.status === 307) {
-        console.log('🔄 Detected 307 redirect via webRequest listener');
-        status = 307;
-        redirectUrl = lastRequestInfo.location;
-      }
-    }
-    lastRequestInfo = null;
-
-    // Handle 307 redirect (session refresh needed) - Zipsale approach
-    if (status === 307) {
-      console.log('🔄 Session expired, attempting refresh...');
+  debugModeCheckPromise = (async () => {
+    try {
+      // Get the current tab's URL to determine the correct origin
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      let origin = 'https://fluf.io'; // fallback to production
       
-      // Try to refresh session first
-      try {
-        const refreshResponse = await fetch(normalizedUrl + '/api/v2/sessions', {
-          method: 'POST',
-          headers: {
-            Cookie: cookieHeader,
-            'User-Agent': navigator.userAgent,
-            'Content-Type': 'application/json',
-          },
-        });
+      if (tabs.length > 0 && tabs[0].url) {
+        try {
+          const url = new URL(tabs[0].url);
+          // Check if it's a FLUF Connect page (localhost or fluf.io)
+          if (url.hostname === 'localhost' || url.hostname.includes('fluf.io') || url.hostname.includes('fluf.local')) {
+            origin = `${url.protocol}//${url.hostname}${url.port ? ':' + url.port : ''}`;
+          }
+        } catch (e) {
+          // If URL parsing fails, use fallback
+        }
+      }
+      
+      const response = await fetch(`${origin}/wp-json/fc/v1/debug/status`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        debugModeEnabled = data.debug_enabled || false;
+        debugModeChecked = true;
+        debugLog('🔧 Debug mode status:', debugModeEnabled ? 'ENABLED' : 'DISABLED');
+      } else {
+        debugModeEnabled = false;
+        debugModeChecked = true;
+        debugLog('🔧 Debug mode check failed, defaulting to disabled');
+      }
+    } catch (error) {
+      debugModeEnabled = false;
+      debugModeChecked = true;
+      debugLog('🔧 Debug mode check error:', error);
+    }
+    
+    return debugModeEnabled;
+  })();
+  
+  return debugModeCheckPromise;
+}
 
-        if (refreshResponse.ok) {
-          console.log('✅ Session refreshed via API, retrying...');
-          // Retry the original request
-          response = await fetch(baseUrl + 'items/new', {
-            method: 'GET',
-            headers: {
-              Cookie: cookieHeader,
-              'User-Agent': navigator.userAgent,
-              Referer: baseUrl,
-              Origin: baseUrl.replace(/\/$/, ''),
-              Accept: 'text/html',
-            },
-            redirect: 'manual',
-          });
-          status = response.status;
-        } else {
-          console.log('❌ API refresh failed, trying tab method...');
-          // Fallback to tab opening like Zipsale
-          const refreshed = await openVintedRefreshTab(redirectUrl || normalizedUrl);
-          if (!refreshed) {
-            return { csrfToken: null, anonId: null, status: 401 };
+// Initialize debug mode check (simple version)
+async function initializeDebugMode() {
+  try {
+    // Check debug mode from API (no user ID needed for simple version)
+    await checkDebugMode();
+  } catch (error) {
+    debugModeEnabled = false;
+    debugModeChecked = true;
+    debugLog('🔧 Debug mode initialization error:', error);
+  }
+}
+
+// Function to extract Vinted cookies using chrome.cookies.getAll (robust tab management)
+async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/', isManualTrigger = false) {
+  // Check rate limiting (unless manually triggered)
+  if (!isManualTrigger) {
+    const now = Date.now();
+    const timeSinceLastCheck = now - lastVintedDebuggerCheck;
+    
+    if (timeSinceLastCheck < VINTED_DEBUGGER_COOLDOWN) {
+      const remainingMinutes = Math.ceil((VINTED_DEBUGGER_COOLDOWN - timeSinceLastCheck) / (60 * 1000));
+      debugLog(`⏰ VINTED: Cookie check rate limited. Please wait ${remainingMinutes} more minutes or use manual trigger.`);
+      return {
+        success: false,
+        message: `Rate limited. Please wait ${remainingMinutes} more minutes or use manual trigger.`,
+        rateLimited: true
+      };
+    }
+  }
+  
+  // Check global coordination to prevent multiple instances across windows
+  if (globalVintedExtractionInProgress) {
+    debugLog('🔒 VINTED: Global extraction already in progress in another window, skipping...');
+    return {
+      success: false,
+      message: 'Vinted authentation already in progress in another window',
+      rateLimited: true
+    };
+  }
+  
+  // Check if authentication is already in progress
+  if (vintedCookiesExtractionLock) {
+    debugLog('🔒 VINTED: Authentication already in progress, waiting...');
+    
+    // Wait for the current authentication to complete
+    while (vintedCookiesExtractionLock) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
+    debugLog('🔓 VINTED: Previous authentication completed, retrying...');
+  }
+  
+  // Set locks
+  vintedCookiesExtractionLock = true;
+  globalVintedExtractionInProgress = true;
+  
+  debugLog('🚀 VINTED: Starting robust cookie extraction with tab management...');
+  debugLog('🎯 Target URL:', baseUrl);
+  
+  let tab;
+  let createdNewTab = false;
+  let shouldKeepTabOpen = false;
+  
+  try {
+    // Step 1: Check for existing Vinted tab in current window
+    const currentWindow = await chrome.windows.getCurrent();
+    const existingTabs = await chrome.tabs.query({
+      windowId: currentWindow.id,
+      url: VINTED_DOMAINS.map(domain => `*://${domain}/*`)
+    });
+    
+    if (existingTabs.length > 0) {
+      debugLog('📱 Using existing Vinted tab:', existingTabs[0].url);
+      tab = existingTabs[0];
+      createdNewTab = false;
+      
+      // Step 2a: Refresh existing tab to ensure fresh session
+      debugLog('🔄 Refreshing existing Vinted tab to ensure fresh session...');
+      await chrome.tabs.reload(tab.id);
+      
+      // Wait for refresh to complete with extended timeout for session refresh
+      await new Promise(resolve => {
+        const listener = (tabId, changeInfo) => {
+          if (tabId === tab.id && changeInfo.status === 'complete') {
+            chrome.tabs.onUpdated.removeListener(listener);
+            resolve();
+          }
+        };
+        chrome.tabs.onUpdated.addListener(listener);
+        setTimeout(() => {
+          chrome.tabs.onUpdated.removeListener(listener);
+          resolve();
+        }, 30000); // 30 second timeout for session refresh
+      });
+      
+      debugLog('✅ Existing Vinted tab refreshed and loaded');
+    } else {
+      debugLog('📱 Creating new Vinted tab...');
+      // Step 2b: Create new tab with /items/new for better session refresh
+      const targetUrl = baseUrl.replace(/\/$/, '') + '/items/new';
+      tab = await chrome.tabs.create({
+        url: targetUrl,
+        active: false // Open in background
+      });
+      createdNewTab = true;
+      shouldKeepTabOpen = true; // Keep new tabs open per user request
+      
+      debugLog('📱 Created new tab with URL:', targetUrl);
+      
+      // Wait for new tab to load with extended timeout for session refresh
+      await new Promise(resolve => {
+        const listener = (tabId, changeInfo) => {
+          if (tabId === tab.id && changeInfo.status === 'complete') {
+            chrome.tabs.onUpdated.removeListener(listener);
+            resolve();
+          }
+        };
+        chrome.tabs.onUpdated.addListener(listener);
+        setTimeout(() => {
+          chrome.tabs.onUpdated.removeListener(listener);
+          resolve();
+        }, 30000); // 30 second timeout for session refresh
+      });
+      
+      debugLog('✅ New Vinted tab loaded');
+    }
+    
+    debugLog('📱 Tab ID:', tab.id);
+    
+    // Step 3: Extract cookies using chrome.cookies.getAll (more reliable than DevTools)
+    debugLog('🍪 VINTED: Extracting cookies using chrome.cookies.getAll...');
+    
+    const targetDomain = new URL(baseUrl).hostname;
+    const vintedCookies = await chrome.cookies.getAll({
+      domain: targetDomain
+    });
+    
+    debugLog(`📊 VINTED: Found ${vintedCookies.length} cookies for domain ${targetDomain}`);
+    
+    // Also try getting cookies from subdomain (www.)
+    if (!targetDomain.startsWith('www.')) {
+      const wwwDomain = 'www.' + targetDomain;
+      const wwwCookies = await chrome.cookies.getAll({
+        domain: wwwDomain
+      });
+      vintedCookies.push(...wwwCookies);
+      debugLog(`📊 VINTED: Found ${wwwCookies.length} additional cookies for www.${targetDomain}`);
+    }
+    
+    // Remove duplicates based on cookie name and domain
+    const uniqueCookies = vintedCookies.filter((cookie, index, self) => 
+      index === self.findIndex(c => c.name === cookie.name && c.domain === cookie.domain)
+    );
+    
+    debugLog(`🎯 VINTED: Found ${uniqueCookies.length} unique Vinted cookies`);
+    debugLog('🍪 VINTED cookies:', uniqueCookies.map(c => 
+      `${c.name} (httpOnly: ${c.httpOnly}, secure: ${c.secure}, domain: ${c.domain})`
+    ));
+    
+    // Step 4: Check for critical cookies
+    const accessTokenWeb = uniqueCookies.find(c => c.name === 'access_token_web');
+    const anonId = uniqueCookies.find(c => c.name === 'anon_id');
+    const sessionCookie = uniqueCookies.find(c => c.name.includes('session'));
+    
+    debugLog('🔍 VINTED: Critical cookie check:');
+    debugLog(' - access_token_web:', accessTokenWeb ? '✅ FOUND' : '❌ MISSING');
+    debugLog(' - anon_id:', anonId ? '✅ FOUND' : '❌ MISSING');
+    debugLog(' - session cookie:', sessionCookie ? '✅ FOUND' : '❌ MISSING');
+    
+    // Step 5: If critical cookies missing, implement retry logic for new tabs
+    if (!accessTokenWeb && createdNewTab && shouldKeepTabOpen) {
+      debugLog('⚠️ VINTED: Critical cookies missing from new tab, implementing retry logic...');
+      
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        debugLog(`🔄 VINTED: Retry attempt ${attempt}/5 - waiting 2 minutes before retry...`);
+        
+        // Wait 2 minutes between retries (as requested)
+        await new Promise(resolve => setTimeout(resolve, 2 * 60 * 1000));
+        
+        // Check if tab is still open
+        try {
+          const tabStatus = await chrome.tabs.get(tab.id);
+          if (!tabStatus) {
+            debugLog('❌ VINTED: Tab was closed, stopping retries');
+            break;
           }
           
-          // Retry after tab refresh
-          const newCookieHeader = await getVintedHeadersCookies(normalizedUrl + '/');
-          response = await fetch(normalizedUrl + '/items/new', {
-            method: 'GET',
-            headers: {
-              Cookie: newCookieHeader,
-              'User-Agent': navigator.userAgent,
-              Referer: normalizedUrl,
-              Origin: normalizedUrl,
-              Accept: 'text/html',
-            },
-            redirect: 'manual',
+          // Refresh the tab before retrying
+          debugLog(`🔄 VINTED: Refreshing tab for retry attempt ${attempt}`);
+          await chrome.tabs.reload(tab.id);
+          
+          // Wait for refresh
+          await new Promise(resolve => {
+            const listener = (tabId, changeInfo) => {
+              if (tabId === tab.id && changeInfo.status === 'complete') {
+                chrome.tabs.onUpdated.removeListener(listener);
+                resolve();
+              }
+            };
+            chrome.tabs.onUpdated.addListener(listener);
+            setTimeout(() => {
+              chrome.tabs.onUpdated.removeListener(listener);
+              resolve();
+            }, 30000); // 30 second timeout
           });
-          status = response.status;
-        }
-      } catch (refreshError) {
-        console.log('❌ Session refresh error:', refreshError);
-        return { csrfToken: null, anonId: null, status: 401 };
-      }
-    }
-
-    // Handle successful response
-    if (status === 200) {
-      const html = await response.text();
-      
-      // Use Zipsale's exact pattern
-      const match = html.match(/\\"CSRF_TOKEN\\":\\"([^"]+)\\"/);
-      const csrfToken = match ? match[1] : null;
-      const anonId = response.headers.get('x-anon-id');
-
-      if (csrfToken) {
-        console.log('✅ CSRF token extracted:', csrfToken.substring(0, 10) + '...');
-        return { csrfToken, anonId, status };
-      } else {
-        console.log('❌ CSRF token not found in HTML');
-        return { csrfToken: null, anonId, status };
-      }
-    } else {
-      console.log('❌ Unexpected response status:', status);
-      return { csrfToken: null, anonId: null, status };
-    }
-
-  } catch (error) {
-    console.log('💥 Error in CSRF extraction:', error);
-    return { csrfToken: null, anonId: null, status: null };
-  }
-}
-
-// Function to extract Vinted CSRF token from /items/new page
-async function getVintedCSRFFromItemsNewWithCookies(cookieHeader, baseUrl = 'https://www.vinted.co.uk/') {
-  try {
-    console.log('🔍 Extracting CSRF token from /items/new...');
-    console.log('🔍 Using base URL:', baseUrl);
-
-    // Request the /items/new page with the complete cookie string
-    const response = await fetch(baseUrl + 'items/new', {
-      method: 'GET',
-      headers: {
-        Cookie: cookieHeader,
-        'User-Agent': navigator.userAgent,
-        Referer: baseUrl,
-        Origin: baseUrl.replace(/\/$/, ''),
-        Accept: 'text/html',
-      },
-      redirect: 'manual',
-    });
-
-    console.log('📡 /items/new response status:', response.status);
-
-    if (response.status === 200) {
-      const html = await response.text();
-
-      // Use Zipsale's exact pattern
-      const match = html.match(/\\"CSRF_TOKEN\\":\\"([^"]+)\\"/);
-      const csrfToken = match ? match[1] : null;
-      const anonId = response.headers.get('x-anon-id');
-
-      // Extract Vinted username from figure img alt attribute
-      let vintedUsername = null;
-
-      // Try multiple patterns to extract the username from HTML
-      // Pattern 1: Look for figure with class "header-avatar" containing img with alt
-      let usernameMatch = html.match(/<figure[^>]*class="[^"]*header-avatar[^"]*"[^>]*>[\s\S]*?<img[^>]*alt="([^"]+)"[^>]*>/i);
-
-      // Pattern 2: Basic figure img alt attribute  
-      if (!usernameMatch) {
-        usernameMatch = html.match(/<figure[^>]*>\s*<img[^>]*alt="([^"]+)"[^>]*>/i);
-      }
-
-      // Pattern 3: Look for img with alt inside any figure (more flexible)
-      if (!usernameMatch) {
-        usernameMatch = html.match(/<figure[^>]*>[\s\S]*?<img[^>]*alt="([^"]+)"[^>]*>[\s\S]*?<\/figure>/i);
-      }
-
-      // Pattern 4: Look for div with header-avatar class containing img
-      if (!usernameMatch) {
-        usernameMatch = html.match(/<div[^>]*class="[^"]*header-avatar[^"]*"[^>]*>[\s\S]*?<img[^>]*alt="([^"]+)"[^>]*>/i);
-      }
-
-      // Pattern 5: Look for any img with class containing "avatar" or "user"
-      if (!usernameMatch) {
-        usernameMatch = html.match(/<img[^>]*class="[^"]*(?:avatar|user)[^"]*"[^>]*alt="([^"]+)"[^>]*>/i);
-      }
-
-      // Pattern 6: Look for username in data attributes or specific patterns
-      if (!usernameMatch) {
-        usernameMatch = html.match(/data-username="([^"]+)"/i);
-      }
-
-      // Pattern 7: Look for any img with alt that looks like a username (no spaces, alphanumeric)
-      if (!usernameMatch) {
-        const allImgMatches = html.match(/<img[^>]*alt="([a-zA-Z0-9_.-]+)"[^>]*/gi);
-        if (allImgMatches) {
-          for (const imgMatch of allImgMatches) {
-            const altMatch = imgMatch.match(/alt="([a-zA-Z0-9_.-]+)"/);
-            if (altMatch && altMatch[1] && altMatch[1].length > 3 && !altMatch[1].includes(' ')) {
-              usernameMatch = altMatch;
-              break;
-            }
+          
+          // Try extracting cookies again
+          const retryCookies = await chrome.cookies.getAll({
+            domain: targetDomain
+          });
+          
+          const retryAccessTokenWeb = retryCookies.find(c => c.name === 'access_token_web');
+          
+          if (retryAccessTokenWeb) {
+            debugLog(`✅ VINTED: Success on retry attempt ${attempt}! Found access_token_web`);
+            
+            // Update cookies with successful retry
+            uniqueCookies.length = 0; // Clear array
+            uniqueCookies.push(...retryCookies);
+            
+            // Break out of retry loop
+            break;
+          } else {
+            debugLog(`❌ VINTED: Retry attempt ${attempt} failed - still no access_token_web`);
           }
+          
+        } catch (tabError) {
+          debugLog(`❌ VINTED: Error checking tab status on retry ${attempt}:`, tabError);
+          break;
         }
       }
-
-      if (usernameMatch) {
-        vintedUsername = usernameMatch[1];
-        console.log('✅ Vinted username extracted:', vintedUsername);
-      } else {
-        console.log('❌ Vinted username not found in HTML - trying alternative methods...');
-
-        // Log a sample of the HTML around figure tags for debugging
-        const figureMatch = html.match(/<figure[\s\S]{0,200}>/i);
-        if (figureMatch) {
-          console.log('🔍 Sample figure HTML found:', figureMatch[0]);
-        }
-
-        // Look for any img tags with alt attributes for debugging
-        const allImgAlts = html.match(/<img[^>]*alt="([^"]+)"[^>]*/gi);
-        if (allImgAlts) {
-          console.log('🔍 All img alt attributes found:', allImgAlts.slice(0, 5)); // Show first 5
-        }
-      }
-
-      if (csrfToken) {
-        console.log('✅ CSRF token extracted successfully');
-        return { csrfToken, anonId, vintedUsername };
-      } else {
-        console.log('❌ CSRF token not found in HTML response');
-
-        // Try alternative patterns
-        const altMatch = html.match(/CSRF_TOKEN["\s]*:["\s]*"([^"]+)"/);
-        if (altMatch) {
-          console.log('✅ Found CSRF token with alternative pattern');
-          return { csrfToken: altMatch[1], anonId, vintedUsername };
-        }
-      }
-    } else if (response.status === 307 || response.status === 401) {
-      console.log('❌ Session expired or not authenticated (status:', response.status, ')');
-      return null;
-    } else {
-      console.log('❌ Unexpected response status:', response.status);
     }
-
+    
+    // Step 6: Don't close new tabs (keep them open as requested)
+    if (createdNewTab && shouldKeepTabOpen) {
+      debugLog('🔒 VINTED: Keeping new tab open as requested (not closing)');
+      // Don't close the tab - leave it open for future use
+    }
+    
+    // Final check for access_token_web
+    const finalAccessTokenWeb = uniqueCookies.find(c => c.name === 'access_token_web');
+    if (!finalAccessTokenWeb) {
+      debugLog('❌ VINTED: access_token_web not found after all attempts - user not logged in');
+      return {
+        success: false,
+        message: 'access_token_web cookie not found. Please log into Vinted.',
+        cookies: uniqueCookies.map(c => c.name),
+        cookieCount: uniqueCookies.length,
+        tabKeptOpen: createdNewTab && shouldKeepTabOpen
+      };
+    }
+    
+    // Step 7: Format as cookie string
+    const cookieString = uniqueCookies.map(c => `${c.name}=${c.value}`).join('; ');
+    
+    debugLog('✅ VINTED: Success! Extracted', uniqueCookies.length, 'cookies');
+    debugLog('🔑 VINTED access_token_web:', finalAccessTokenWeb.value.substring(0, 20) + '...');
+    
+    // Update last check time on successful extraction
+    lastVintedDebuggerCheck = Date.now();
+    
+    return {
+      success: true,
+      cookieString: cookieString,
+      accessTokenWeb: finalAccessTokenWeb.value,
+      anonId: uniqueCookies.find(c => c.name === 'anon_id')?.value || null,
+      totalCookies: uniqueCookies.length,
+      cookies: uniqueCookies,
+      tabKeptOpen: createdNewTab && shouldKeepTabOpen
+    };
+    
   } catch (error) {
-    console.error('💥 Error fetching CSRF from /items/new:', error);
-    return null;
+    debugLog('❌ VINTED: Error:', error);
+    
+    // Don't close tabs on error if they were newly created
+    if (createdNewTab && shouldKeepTabOpen) {
+      debugLog('🔒 VINTED: Keeping tab open despite error (as requested)');
+    }
+    
+    return {
+      success: false,
+      message: error.message,
+      tabKeptOpen: createdNewTab && shouldKeepTabOpen
+    };
+  } finally {
+    // Always release the locks
+    vintedCookiesExtractionLock = false;
+    globalVintedExtractionInProgress = false;
+    debugLog('🔓 VINTED: Locks released');
   }
-
-  return null;
 }
 
+// Legacy function for backward compatibility (now uses chrome.cookies.getAll)
+async function getVintedHeadersCookies(baseUrl = 'https://www.vinted.co.uk/', isManualTrigger = false) {
+  debugLog('🔄 VINTED: Using chrome.cookies.getAll for cookie extraction...');
+  const result = await getVintedCookiesWithDevTools(baseUrl, isManualTrigger);
+  
+  if (result.success) {
+    return result.cookieString;
+  } else {
+    throw new Error(result.message || 'Failed to extract Vinted cookies');
+  }
+}
 
 
 // Function to extract Vinted tokens
-async function getVintedTokensViaContentScript(userIdentifier = "", baseUrl = null) {
-  console.group('🟣 VINTED TOKEN EXTRACTION');
+async function getVintedTokensViaContentScript(userIdentifier = "", baseUrl = null, isManualTrigger = false) {
+  isManualTrigger = (userIdentifier === "manual_trigger") || isManualTrigger;
+  debugLog('🟣 VINTED TOKEN EXTRACTION');
+  
+  // Debounce rapid duplicate calls (unless manually triggered)
+  if (!isManualTrigger) {
+    const now = Date.now();
+    const timeSinceLastAttempt = now - lastVintedAuthAttempt;
+    
+    if (timeSinceLastAttempt < VINTED_AUTH_DEBOUNCE_MS) {
+      debugLog(`⏸️ VINTED: Debouncing duplicate auth attempt (${timeSinceLastAttempt}ms since last attempt)`);
+      return { 
+        success: false, 
+        message: 'Duplicate auth attempt debounced', 
+        debounced: true 
+      };
+    }
+    
+    // Update last attempt timestamp
+    lastVintedAuthAttempt = now;
+  }
+  
+  // Check debug mode if not already checked
+  if (!debugModeChecked) {
+    await checkDebugMode();
+  }
   
   // If no baseUrl provided, get from stored preference or detect from IP
   if (!baseUrl) {
     baseUrl = await getVintedDomainPreference();
   } else {
     // ALWAYS update stored preference when baseUrl is explicitly provided (user reconnection)
-    console.log('🔄 Updating stored Vinted domain preference to:', baseUrl);
+    debugLog('🔄 Updating stored Vinted domain preference to:', baseUrl);
     await updateVintedDomainPreference(baseUrl);
   }
   
-  console.log('🔍 Using base URL:', baseUrl);
-  console.log('🔍 Using userIdentifier:', userIdentifier);
+  debugLog('🔍 Using base URL:', baseUrl);
+  debugLog('🔍 Using userIdentifier:', userIdentifier);
 
   try {
     // First, debug what cookies are available
     // const debugInfo = await debugVintedCookies(); // Removed
 
     // if (!debugInfo || !debugInfo.isLoggedIn) { // Removed
-    //   console.log('❌ User not logged into Vinted - cannot proceed'); // Removed
-    //   console.log('💡 Please log into Vinted first, then try again'); // Removed
+    //   debugLog('❌ User not logged into Vinted - cannot proceed'); // Removed
+    //   debugLog('💡 Please log into Vinted first, then try again'); // Removed
     //   console.groupEnd(); // Removed
     //   return { success: false, message: 'User not logged into Vinted' }; // Removed
     // } // Removed
 
 
-    console.log('❌ access_token_web cookie not found - attempting authentication...');
-
-    // Try Zipsale-style CSRF token extraction
-    const csrfResult = await getVintedCSRFTokenZipsaleStyle(baseUrl);
-
-    if (!csrfResult || !csrfResult.csrfToken) {
-      console.log('❌ CSRF token extraction failed');
-      console.log('💡 Try manually navigating to', baseUrl.replace(/\/$/, '') + '/items/new');
-      console.groupEnd();
-      return {
-        success: false,
-        error: 'Please refresh Session by visiting ' + baseUrl.replace(/\/$/, '') + '/items/new, then try connecting again.'
-      };
-    }
+    debugLog('❌ access_token_web cookie not found - attempting authentication...');
 
     // Get cookies from browser cookie store
-    const cookieString = await getVintedHeadersCookies(baseUrl);
+    const cookieString = await getVintedHeadersCookies(baseUrl, isManualTrigger);
 
     if (!cookieString) {
-      console.log('❌ No Vinted cookies found');
-      console.groupEnd();
+      debugLog('❌ No Vinted cookies found');
       return { success: false, message: 'No cookies found' };
     }
 
     // Check if we have critical cookies for Vinted
     const hasAccessTokenWeb = cookieString.includes('access_token_web=');
-    console.log('🔍 FINAL cookie check:', {
+    debugLog('🔍 FINAL cookie check:', {
       access_token_web: hasAccessTokenWeb ? '✅ PRESENT' : '❌ MISSING'
     });
 
     // If critical cookies are missing, trigger session refresh
     if (!hasAccessTokenWeb) {
-      console.log('🔄 CRITICAL COOKIES MISSING - triggering session refresh...');
-      console.log('💡 Missing cookies indicate expired session, attempting refresh...');
+      debugLog('🔄 CRITICAL COOKIES MISSING - triggering session refresh...');
+      debugLog('💡 Missing cookies indicate expired session, attempting refresh...');
 
       try {
         // Trigger session refresh using Zipsale-style approach
@@ -867,12 +847,12 @@ async function getVintedTokensViaContentScript(userIdentifier = "", baseUrl = nu
         });
 
         if (refreshResult.success) {
-          console.log('✅ Session refresh successful, retrying token extraction...');
+          debugLog('✅ Session refresh successful, retrying token extraction...');
           // Retry getting cookies after refresh
-          const refreshedCookieString = await getVintedHeadersCookies(baseUrl);
+          const refreshedCookieString = await getVintedHeadersCookies(baseUrl, isManualTrigger);
           if (refreshedCookieString) {
             cookieString = refreshedCookieString;
-            console.log('✅ Updated cookies after refresh');
+            debugLog('✅ Updated cookies after refresh');
 
             // Notify frontend that connection is restored
             try {
@@ -885,14 +865,14 @@ async function getVintedTokensViaContentScript(userIdentifier = "", baseUrl = nu
                 }
               });
             } catch (error) {
-              console.log('Could not notify frontend of auth restoration:', error);
+              debugLog('Could not notify frontend of auth restoration:', error);
             }
           }
         } else {
-          console.log('❌ Session refresh failed:', refreshResult.error);
+          debugLog('❌ Session refresh failed:', refreshResult.error);
         }
       } catch (refreshError) {
-        console.error('❌ Session refresh error:', refreshError);
+        debugLog('❌ Session refresh error:', refreshError);
       }
     }
 
@@ -901,7 +881,7 @@ async function getVintedTokensViaContentScript(userIdentifier = "", baseUrl = nu
     const vUidMatch = cookieString.match(/v_uid=([^;]+)/);
     if (vUidMatch) {
       userId = vUidMatch[1];
-      console.log('✅ Extracted user ID from v_uid cookie:', userId);
+      debugLog('✅ Extracted user ID from v_uid cookie:', userId);
     }
 
     // If no v_uid, try to extract from access_token_web (JWT token)
@@ -913,60 +893,27 @@ async function getVintedTokensViaContentScript(userIdentifier = "", baseUrl = nu
           if (tokenParts.length === 3) {
             const payload = JSON.parse(atob(tokenParts[1]));
             userId = payload.user_id || payload.sub || payload.id;
-            console.log('✅ Extracted user ID from JWT:', userId);
+            debugLog('✅ Extracted user ID from JWT:', userId);
           }
         } catch (jwtError) {
-          console.log('❌ Could not decode JWT token:', jwtError.message);
+          debugLog('❌ Could not decode JWT token:', jwtError.message);
         }
       }
     }
 
-    // Try to extract CSRF token using Zipsale's method
-    const csrfResult2 = await getVintedCSRFTokenZipsaleStyle(baseUrl);
+    const extractedData = {
+      channel: 'vinted',
+      fullCookies: cookieString,
+      userId: userId,
+      vintedUsername: null, // We'll get this from the HTML if needed
+      hasAccessTokenWeb: hasAccessTokenWeb,
+      baseUrl: baseUrl
+    };
     
-    if (csrfResult2 && csrfResult2.csrfToken) {
-      console.log('✅ SUCCESS: CSRF token extracted');
-      const extractedData = {
-        channel: 'vinted',
-        fullCookies: cookieString,
-        userId: userId,
-        csrfToken: csrfResult2.csrfToken,
-        anonId: csrfResult2.anonId,
-        vintedUsername: null, // We'll get this from the HTML if needed
-        hasAccessTokenWeb: hasAccessTokenWeb,
-        baseUrl: baseUrl
-      };
-      
-      sendTokenToAPI(extractedData, baseUrl, userIdentifier, null);
-      console.groupEnd();
-      return { success: true, message: 'Tokens found and sent to API' };
-    } else {
-      console.log('❌ CSRF extraction failed - trying fallback...');
-      // Fallback to the old method if Zipsale approach fails
-      const csrfResultFallback = await getVintedCSRFFromItemsNewWithCookies(cookieString, baseUrl);
-      
-      if (csrfResultFallback && csrfResultFallback.csrfToken) {
-        console.log('✅ SUCCESS: CSRF token extracted using fallback method');
-        const extractedData = {
-          channel: 'vinted',
-          fullCookies: cookieString,
-          userId: userId,
-          csrfToken: csrfResultFallback.csrfToken,
-          anonId: csrfResultFallback.anonId,
-          vintedUsername: csrfResultFallback.vintedUsername,
-          hasAccessTokenWeb: hasAccessTokenWeb,
-          baseUrl: baseUrl
-        };
-        
-        sendTokenToAPI(extractedData, baseUrl, userIdentifier, null);
-        console.groupEnd();
-        return { success: true, message: 'Tokens found and sent to API' };
-      } else {
-        console.log('❌ All CSRF extraction methods failed');
-        console.groupEnd();
-        return { success: false, message: 'CSRF extraction failed' };
-      }
-    }
+    sendTokenToAPI(extractedData, baseUrl, userIdentifier, null);
+    console.groupEnd();
+
+    return { success: true, message: 'Tokens found and sent to API' };
 
   } catch (error) {
     console.error('💥 Error extracting Vinted tokens:', error);
@@ -981,42 +928,61 @@ async function getDepopTokensViaContentScript(userIdentifier = "") {
 
   try {
     // Check if we already have a Depop tab open
+    debugLog('🔍 Searching for existing Depop tabs...');
     let depopTab = await chrome.tabs.query({
       url: ["*://*.depop.com/*", "*://depop.com/*"]
     });
+    debugLog('🔍 Found Depop tabs:', depopTab.length);
 
     let createdNewDepopTab = false;
     let tabId = null;
     if (depopTab.length === 0) {
-      console.log('📱 Creating new Depop tab...');
+      debugLog('📱 Creating new Depop tab...');
       const newTab = await chrome.tabs.create({
         url: 'https://www.depop.com',
         active: false // Open in background
       });
       tabId = newTab.id;
       createdNewDepopTab = true;
+      debugLog('📱 Created new Depop tab with ID:', tabId);
 
       // Wait for page to load
+      debugLog('⏳ Waiting for Depop page to load...');
       await new Promise(resolve => {
         const listener = function (updatedTabId, changeInfo, tab) {
+          debugLog('🔧 Tab update event:', updatedTabId, changeInfo.status);
           if (updatedTabId === newTab.id && changeInfo.status === 'complete') {
+            debugLog('✅ Depop page loaded successfully');
             chrome.tabs.onUpdated.removeListener(listener);
             resolve();
           }
         };
         chrome.tabs.onUpdated.addListener(listener);
+        
+        // Fallback timeout
+        setTimeout(() => {
+          debugLog('⏰ Depop page load timeout - proceeding anyway');
+          chrome.tabs.onUpdated.removeListener(listener);
+          resolve();
+        }, 10000); // 10 second timeout
       });
 
-      console.log('✅ Depop tab loaded successfully');
+      debugLog('✅ Depop tab loaded successfully');
     } else {
-      console.log('📱 Using existing Depop tab:', depopTab[0].url);
+      debugLog('📱 Using existing Depop tab:', depopTab[0].url);
       tabId = depopTab[0].id;
     }
 
     // Inject content script to extract tokens from page context
-    const results = await chrome.scripting.executeScript({
-      target: { tabId: tabId },
-      func: () => {
+    debugLog('🔧 Attempting to inject content script into Depop tab:', tabId);
+    debugLog('🔧 Tab URL:', depopTab.length > 0 ? depopTab[0].url : 'New tab');
+    
+    let results;
+    try {
+      results = await chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        func: () => {
+        console.log('🔧 Content script injected successfully into Depop page');
         // This function runs in the Depop page context
         function getCookie(name) {
           const value = `; ${document.cookie}`;
@@ -1027,28 +993,50 @@ async function getDepopTokensViaContentScript(userIdentifier = "") {
 
         // Get all cookies from the page context
         const allCookies = document.cookie;
+        console.log('🔧 All cookies:', allCookies);
         const accessToken = getCookie('access_token');
         const userId = getCookie('user_id');
 
-        console.log('🍪 DEPOP COOKIES:', allCookies.length, 'chars');
-        console.log(' - access_token:', accessToken ? '[PRESENT]' : '[MISSING]');
-        console.log(' - user_id:', userId ? '[PRESENT]' : '[MISSING]');
+        console.log('🔧 DEPOP COOKIES FOUND:', allCookies.length, 'chars');
+        console.log('🔧 - access_token:', accessToken ? '[PRESENT]' : '[MISSING]');
+        console.log('🔧 - user_id:', userId ? '[PRESENT]' : '[MISSING]');
+        console.log('🔧 - Full cookie string:', allCookies.substring(0, 200) + '...');
 
         return {
           success: !!(accessToken && userId),
           accessToken: accessToken,
           userId: userId,
           allCookies: allCookies,
-          sourceUrl: window.location.href
+          sourceUrl: "https://www.depop.com"
         };
       }
-    });
+      });
+    } catch (injectionError) {
+      console.error('💥 Script injection error:', injectionError);
+      debugLog('🔧 Injection error details:', injectionError.message);
+      
+      // Close tab if we created it
+      if (createdNewDepopTab && tabId) {
+        debugLog('🗂️ Closing Depop tab that was created (injection error)');
+        chrome.tabs.remove(tabId);
+      }
+      
+      console.groupEnd();
+      return { 
+        success: false, 
+        message: 'Script injection failed: ' + injectionError.message,
+        error: injectionError.message 
+      };
+    }
 
+    debugLog('🔧 Content script injection results:', results);
+    
     if (results && results[0] && results[0].result) {
       const result = results[0].result;
+      debugLog('🔧 Content script result:', result);
 
       if (result.success) {
-        console.log('✅ DEPOP SUCCESS: Both access token and user ID found');
+        debugLog('✅ DEPOP SUCCESS: Both access token and user ID found');
         const extractedData = {
           channel: 'depop',
           accessToken: result.accessToken,
@@ -1059,39 +1047,63 @@ async function getDepopTokensViaContentScript(userIdentifier = "") {
 
         // Close tab if we created it
         if (createdNewDepopTab && tabId) {
-          console.log('🗂️ Closing Depop tab that was created for token extraction');
+          debugLog('🗂️ Closing Depop tab that was created for token extraction');
           chrome.tabs.remove(tabId);
         }
 
         console.groupEnd();
         return { success: true, message: 'Tokens found and sent to API' };
       } else {
-        console.log('❌ DEPOP FAIL: Missing required tokens');
+        debugLog('❌ DEPOP FAIL: Missing required tokens');
 
         // Close tab if we created it and failed
         if (createdNewDepopTab && tabId) {
-          console.log('🗂️ Closing Depop tab that was created (missing tokens)');
+          debugLog('🗂️ Closing Depop tab that was created (missing tokens)');
           chrome.tabs.remove(tabId);
         }
 
         console.groupEnd();
-        return { success: false, message: 'Missing required tokens' };
+        return { success: false, message: 'User not logged in' };
       }
     } else {
-      console.log('❌ DEPOP FAIL: Content script injection failed');
+      console.error('❌ DEPOP FAIL: Content script returned unexpected results');
+      console.error('🔧 Results object:', results);
+      console.error('🔧 Results length:', results ? results.length : 'null');
+      console.error('🔧 First result:', results && results[0] ? results[0] : 'null');
+      
+      debugLog('❌ DEPOP FAIL: Content script injection failed');
+      debugLog('🔧 Results object:', results);
+      debugLog('🔧 Results length:', results ? results.length : 'null');
+      debugLog('🔧 First result:', results && results[0] ? results[0] : 'null');
 
       // Close tab if we created it and failed
       if (createdNewDepopTab && tabId) {
-        console.log('🗂️ Closing Depop tab that was created (injection failed)');
+        debugLog('🗂️ Closing Depop tab that was created (injection failed)');
         chrome.tabs.remove(tabId);
       }
 
       console.groupEnd();
-      return { success: false, message: 'Content script injection failed' };
+      
+      let errorDetail = 'Unknown error';
+      if (!results) {
+        errorDetail = 'No results returned from script execution';
+      } else if (!results[0]) {
+        errorDetail = 'Results array is empty';
+      } else if (!results[0].result) {
+        errorDetail = 'Result object is missing or undefined';
+      }
+      
+      return { 
+        success: false, 
+        message: 'Content script injection failed: ' + errorDetail,
+        error: errorDetail 
+      };
     }
 
   } catch (error) {
     console.error('💥 Error extracting Depop tokens:', error);
+    debugLog('🔧 Error details:', error);
+    debugLog('🔧 Error stack:', error.stack);
     console.groupEnd();
     return { success: false, error: error.message };
   }
@@ -1099,7 +1111,7 @@ async function getDepopTokensViaContentScript(userIdentifier = "") {
 
 // Enhanced Vinted session refresh handler (based on Zipsale approach)
 async function handleVintedSessionRefresh(request) {
-  console.log('🔄 VINTED SESSION REFRESH: Starting enhanced session refresh...');
+  debugLog('🔄 VINTED SESSION REFRESH: Starting enhanced session refresh...');
 
   const userIdentifier = request.userIdentifier;
   const hasValidSession = request.hasValidSession;
@@ -1108,7 +1120,7 @@ async function handleVintedSessionRefresh(request) {
   try {
     // Step 1: Try API refresh first (like Zipsale)
     if (validateSession && !hasValidSession) {
-      console.log('🔄 VINTED SESSION REFRESH: Session appears expired, trying API refresh first...');
+      debugLog('🔄 VINTED SESSION REFRESH: Session appears expired, trying API refresh first...');
 
       try {
         // Try Vinted's session refresh API endpoint
@@ -1123,22 +1135,22 @@ async function handleVintedSessionRefresh(request) {
         });
 
         if (apiRefreshResult.ok) {
-          console.log('🔄 VINTED SESSION REFRESH: API refresh successful, proceeding with token extraction...');
+          debugLog('🔄 VINTED SESSION REFRESH: API refresh successful, proceeding with token extraction...');
           // Wait a moment for cookies to be updated
           await new Promise(resolve => setTimeout(resolve, 1000));
         } else {
-          console.log('🔄 VINTED SESSION REFRESH: API refresh failed, falling back to tab method...');
+          debugLog('🔄 VINTED SESSION REFRESH: API refresh failed, falling back to tab method...');
           throw new Error('API refresh failed');
         }
       } catch (apiError) {
-        console.log('🔄 VINTED SESSION REFRESH: API refresh error, using tab fallback:', apiError.message);
+        debugLog('🔄 VINTED SESSION REFRESH: API refresh error, using tab fallback:', apiError.message);
 
         // Step 2: Fallback to tab opening (like Zipsale)
         const refreshResult = await openVintedRefreshTab(baseUrl);
         if (!refreshResult) {
-          console.log('🔄 VINTED SESSION REFRESH: Both API and tab refresh failed');
+          debugLog('🔄 VINTED SESSION REFRESH: Both API and tab refresh failed');
         } else {
-          console.log('🔄 VINTED SESSION REFRESH: Tab refresh succeeded, waiting before token extraction...');
+          debugLog('🔄 VINTED SESSION REFRESH: Tab refresh succeeded, waiting before token extraction...');
           // Wait a bit for cookies to be updated
           await new Promise(resolve => setTimeout(resolve, 2000));
         }
@@ -1149,7 +1161,7 @@ async function handleVintedSessionRefresh(request) {
     const result = await getVintedTokensViaContentScript(userIdentifier, baseUrl);
 
     if (result && result.success) {
-      console.log('🔄 VINTED SESSION REFRESH: Tokens extracted successfully');
+      debugLog('🔄 VINTED SESSION REFRESH: Tokens extracted successfully');
       return {
         success: true,
         message: 'Vinted session refresh completed successfully',
@@ -1157,7 +1169,7 @@ async function handleVintedSessionRefresh(request) {
         hasValidSession: true
       };
     } else {
-      console.log('🔄 VINTED SESSION REFRESH: Token extraction failed');
+      debugLog('🔄 VINTED SESSION REFRESH: Token extraction failed');
       return {
         success: false,
         message: result?.message || 'Failed to extract Vinted tokens',
@@ -1181,7 +1193,7 @@ async function handleVintedSessionRefresh(request) {
 // Enhanced Vinted refresh tab (based on Zipsale's robust approach)
 async function openVintedRefreshTab(baseUrl = 'https://www.vinted.co.uk/') {
   return new Promise((resolve) => {
-    console.log('🔄 Using base URL:', baseUrl);
+    debugLog('🔄 Using base URL:', baseUrl);
 
     const vintedUrl = baseUrl.replace(/\/$/, '');
     const refreshUrl = `${vintedUrl}/items/new`;
@@ -1203,22 +1215,22 @@ async function openVintedRefreshTab(baseUrl = 'https://www.vinted.co.uk/') {
       // Enhanced webRequest listener (like Zipsale)
       const webRequestListener = async (details) => {
         if (details.tabId !== tab.id) {
-          console.log('🔄 VINTED SESSION REFRESH: Different tab ID, ignoring');
+          debugLog('🔄 VINTED SESSION REFRESH: Different tab ID, ignoring');
           return;
         }
 
         redirectedTo = details.url;
-        console.log('🔄 VINTED SESSION REFRESH: WebRequest detected:', redirectedTo);
+        debugLog('🔄 VINTED SESSION REFRESH: WebRequest detected:', redirectedTo);
 
         resolved = true;
         if (redirectedTo.startsWith(`${vintedUrl}/items/new`)) {
-          console.log('🔄 VINTED SESSION REFRESH: Success - redirected to new item page');
+          debugLog('🔄 VINTED SESSION REFRESH: Success - redirected to new item page');
           cleanup(true);
         } else if (redirectedTo.includes('/signup') || redirectedTo.includes('/login')) {
-          console.log('🔄 VINTED SESSION REFRESH: Failure - redirected to signup/login');
+          debugLog('🔄 VINTED SESSION REFRESH: Failure - redirected to signup/login');
           cleanup(false);
         } else {
-          console.log('🔄 VINTED SESSION REFRESH: Unknown redirect, treating as success');
+          debugLog('🔄 VINTED SESSION REFRESH: Unknown redirect, treating as success');
           cleanup(true);
         }
       };
@@ -1228,15 +1240,15 @@ async function openVintedRefreshTab(baseUrl = 'https://www.vinted.co.uk/') {
         if (tabId !== tab.id || resolved) return;
 
         if (changeInfo.status === 'complete') {
-          console.log('🔄 VINTED SESSION REFRESH: Tab completed loading:', updatedTab.url);
+          debugLog('🔄 VINTED SESSION REFRESH: Tab completed loading:', updatedTab.url);
 
           // If webRequest didn't catch it, check URL directly
           if (!resolved) {
             if (updatedTab.url && updatedTab.url.includes('/items/new')) {
-              console.log('🔄 VINTED SESSION REFRESH: Tab update - success');
+              debugLog('🔄 VINTED SESSION REFRESH: Tab update - success');
               cleanup(true);
             } else if (updatedTab.url && (updatedTab.url.includes('/login') || updatedTab.url.includes('/signup'))) {
-              console.log('🔄 VINTED SESSION REFRESH: Tab update - failure');
+              debugLog('🔄 VINTED SESSION REFRESH: Tab update - failure');
               cleanup(false);
             }
           }
@@ -1250,8 +1262,8 @@ async function openVintedRefreshTab(baseUrl = 'https://www.vinted.co.uk/') {
       // Timeout after 20 seconds (like Zipsale)
       const timeout = setTimeout(() => {
         if (!resolved) {
-          console.log('🔄 VINTED SESSION REFRESH: Timeout waiting for refresh (20s)');
-          console.log('🔄 VINTED SESSION REFRESH: Last known URL:', redirectedTo || 'none');
+          debugLog('🔄 VINTED SESSION REFRESH: Timeout waiting for refresh (20s)');
+          debugLog('🔄 VINTED SESSION REFRESH: Last known URL:', redirectedTo || 'none');
           cleanup(false);
         }
       }, 20000);
@@ -1266,7 +1278,7 @@ async function openVintedRefreshTab(baseUrl = 'https://www.vinted.co.uk/') {
 
         // Close the tab
         chrome.tabs.remove(tab.id, () => {
-          console.log('🔄 VINTED SESSION REFRESH: Refresh tab closed, success:', success);
+          debugLog('🔄 VINTED SESSION REFRESH: Refresh tab closed, success:', success);
           resolve(success);
         });
       };
@@ -1276,24 +1288,27 @@ async function openVintedRefreshTab(baseUrl = 'https://www.vinted.co.uk/') {
 
 // Main approach - check both platforms
 function getTokenViaContentScript(sourceUrl = "", sendResponse = null, userIdentifier = "") {
-  console.log("Starting getTokenViaContentScript for sourceUrl:", sourceUrl);
-  console.log("Using userIdentifier:", userIdentifier);
+  debugLog("Starting getTokenViaContentScript for sourceUrl:", sourceUrl);
+  debugLog("Using userIdentifier:", userIdentifier);
+  
+  // If called from popup, treat as manual trigger to bypass rate limits
+  const isManualTrigger = userIdentifier === "" && sourceUrl === "";
 
   console.group('🚀 Checking Both Platforms');
-  console.log('📋 Starting parallel checks for Depop and Vinted...');
+  debugLog('📋 Starting parallel checks for Depop and Vinted...');
 
   let completedChecks = 0;
   let allResults = [];
   let hasResponded = false;
 
   // Check Depop
-  console.log('🟡 Initiating Depop check...');
+    debugLog('🟡 Initiating Depop check...');
   getDepopTokensViaContentScript(userIdentifier).then((result) => {
     if (result && result.success) {
-      console.log('✅ Depop check completed successfully');
+      debugLog('✅ Depop check completed successfully');
       allResults.push({ platform: 'Depop', success: true, data: { channel: 'depop' } });
     } else {
-      console.log('❌ Depop check completed but no data sent to API');
+      debugLog('❌ Depop check completed but no data sent to API');
       allResults.push({ platform: 'Depop', success: false, error: result ? result.message : 'Unknown error' });
     }
     completedChecks++;
@@ -1301,7 +1316,7 @@ function getTokenViaContentScript(sourceUrl = "", sendResponse = null, userIdent
     if (completedChecks === 2 && !hasResponded && sendResponse) {
       hasResponded = true;
       const successfulResults = allResults.filter(r => r.success);
-      console.log(`🏁 Both checks complete: ${successfulResults.length}/2 successful`);
+      debugLog(`🏁 Both checks complete: ${successfulResults.length}/2 successful`);
       console.groupEnd();
       sendResponse({
         success: successfulResults.length > 0,
@@ -1309,7 +1324,7 @@ function getTokenViaContentScript(sourceUrl = "", sendResponse = null, userIdent
         message: `Checked 2 platforms, ${successfulResults.length} successful`
       });
     } else if (completedChecks === 2) {
-      console.log(`🏁 Both checks complete: ${allResults.filter(r => r.success).length}/2 successful`);
+      debugLog(`🏁 Both checks complete: ${allResults.filter(r => r.success).length}/2 successful`);
       console.groupEnd();
     }
   }).catch((error) => {
@@ -1320,7 +1335,7 @@ function getTokenViaContentScript(sourceUrl = "", sendResponse = null, userIdent
     if (completedChecks === 2 && !hasResponded && sendResponse) {
       hasResponded = true;
       const successfulResults = allResults.filter(r => r.success);
-      console.log(`🏁 Both checks complete: ${successfulResults.length}/2 successful`);
+      debugLog(`🏁 Both checks complete: ${successfulResults.length}/2 successful`);
       console.groupEnd();
       sendResponse({
         success: successfulResults.length > 0,
@@ -1328,19 +1343,19 @@ function getTokenViaContentScript(sourceUrl = "", sendResponse = null, userIdent
         message: `Checked 2 platforms, ${successfulResults.length} successful`
       });
     } else if (completedChecks === 2) {
-      console.log(`🏁 Both checks complete: ${allResults.filter(r => r.success).length}/2 successful`);
+      debugLog(`🏁 Both checks complete: ${allResults.filter(r => r.success).length}/2 successful`);
       console.groupEnd();
     }
   });
 
   // Check Vinted
-  console.log('🟣 Initiating Vinted check...');
-  getVintedTokensViaContentScript(userIdentifier).then((result) => {
+  debugLog('🟣 Initiating Vinted check...');
+  getVintedTokensViaContentScript(isManualTrigger ? "manual_trigger" : userIdentifier).then((result) => {
     if (result && result.success) {
-      console.log('✅ Vinted check completed successfully');
+      debugLog('✅ Vinted check completed successfully');
       allResults.push({ platform: 'Vinted', success: true, data: { channel: 'vinted' } });
     } else {
-      console.log('❌ Vinted check completed but no data sent to API');
+      debugLog('❌ Vinted check completed but no data sent to API');
       allResults.push({ platform: 'Vinted', success: false, error: result ? result.message : 'Unknown error' });
     }
     completedChecks++;
@@ -1348,7 +1363,7 @@ function getTokenViaContentScript(sourceUrl = "", sendResponse = null, userIdent
     if (completedChecks === 2 && !hasResponded && sendResponse) {
       hasResponded = true;
       const successfulResults = allResults.filter(r => r.success);
-      console.log(`🏁 Both checks complete: ${successfulResults.length}/2 successful`);
+      debugLog(`🏁 Both checks complete: ${successfulResults.length}/2 successful`);
       console.groupEnd();
       sendResponse({
         success: successfulResults.length > 0,
@@ -1356,7 +1371,7 @@ function getTokenViaContentScript(sourceUrl = "", sendResponse = null, userIdent
         message: `Checked 2 platforms, ${successfulResults.length} successful`
       });
     } else if (completedChecks === 2) {
-      console.log(`🏁 Both checks complete: ${allResults.filter(r => r.success).length}/2 successful`);
+      debugLog(`🏁 Both checks complete: ${allResults.filter(r => r.success).length}/2 successful`);
       console.groupEnd();
     }
   }).catch((error) => {
@@ -1367,7 +1382,7 @@ function getTokenViaContentScript(sourceUrl = "", sendResponse = null, userIdent
     if (completedChecks === 2 && !hasResponded && sendResponse) {
       hasResponded = true;
       const successfulResults = allResults.filter(r => r.success);
-      console.log(`🏁 Both checks complete: ${successfulResults.length}/2 successful`);
+      debugLog(`🏁 Both checks complete: ${successfulResults.length}/2 successful`);
       console.groupEnd();
       sendResponse({
         success: successfulResults.length > 0,
@@ -1375,7 +1390,7 @@ function getTokenViaContentScript(sourceUrl = "", sendResponse = null, userIdent
         message: `Checked 2 platforms, ${successfulResults.length} successful`
       });
     } else if (completedChecks === 2) {
-      console.log(`🏁 Both checks complete: ${allResults.filter(r => r.success).length}/2 successful`);
+      debugLog(`🏁 Both checks complete: ${allResults.filter(r => r.success).length}/2 successful`);
       console.groupEnd();
     }
   });
@@ -1389,7 +1404,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     });
     return true; // Keep the message channel open for async response
   } else if (request.action === "FCU_checkNow") {
-    console.log('🔄 MANUAL CHECK INITIATED from popup - checking both platforms...');
+    debugLog('🔄 MANUAL CHECK INITIATED from popup - checking both platforms (bypassing rate limits)...');
+    debugLog('⚠️  WARNING: This is a legacy "check all platforms" action from the extension popup');
+    debugLog('⚠️  For channel-specific auth, use FCU_getTokenViaContentScript with channel parameter');
     getTokenViaContentScript();
     sendResponse({ message: "Check initiated" });
 
@@ -1406,11 +1423,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true; // Keep message channel open for async response
   } else if (request.action === "FCU_VINTED_CREATE_LISTING") {
     // Handle Vinted listing creation from FLUF backend
-    console.log("🚀 VINTED LISTING: Received create listing request from FLUF");
-    console.log("Request data:", request);
+    debugLog("🚀 VINTED LISTING: Received create listing request from FLUF");
+    debugLog("Request data:", request);
 
     handleVintedListingCreation(request).then(result => {
-      console.log("✅ VINTED LISTING: Result:", result);
+      debugLog("✅ VINTED LISTING: Result:", result);
       sendResponse(result);
     }).catch(error => {
       console.error("❌ VINTED LISTING: Error:", error);
@@ -1423,32 +1440,35 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     return true; // Keep message channel open for async response
   } else if (request.action === "FCU_getTokenViaContentScript") {
-    console.log("Received getTokenViaContentScript via content.js message");
-    console.log("Request data:", request);
+    debugLog("Received getTokenViaContentScript via content.js message");
+    debugLog("Request data:", request);
 
     const channel = request.channel || 'depop'; // Default to depop for backward compatibility
+    
+    debugLog(`🔐 CHANNEL-SPECIFIC AUTH: Processing ${channel.toUpperCase()} authentication request`);
+    debugLog(`🔐 CHANNEL ISOLATION: Will ONLY authenticate ${channel.toUpperCase()}, not other platforms`);
 
     // Route to specific platform based on channel
     if (channel === 'vinted') {
       const baseUrl = request.base_url; // Don't provide default here, let the function handle it
 
-      console.log('🟣 Processing Vinted auth request with baseUrl:', baseUrl);
+      debugLog('🟣 Processing Vinted auth request with baseUrl:', baseUrl);
       
       // Record frontend refresh timestamp for alarm coordination
       chrome.storage.local.set({ 
         vinted_last_frontend_refresh: Date.now() 
       });
-      console.log('🔔 VINTED COORDINATION: Recorded frontend refresh timestamp');
+      debugLog('🔔 VINTED COORDINATION: Recorded frontend refresh timestamp');
       
-      getVintedTokensViaContentScript(request.userIdentifier, baseUrl).then(result => {
-        console.log('🟣 Vinted auth result:', result);
+      getVintedTokensViaContentScript(request.userIdentifier, baseUrl, true).then(result => {
+        debugLog('🟣 Vinted auth result:', result);
         const response = {
           success: result?.success || false,
           error: result?.success ? null : (result?.message || result?.error || 'Unknown error'),
           message: result?.success ? result?.message : null,
           channel: 'vinted'
         };
-        console.log('🟣 Sending Vinted response to content script:', response);
+        debugLog('🟣 Sending Vinted response to content script:', response);
         sendResponse(response);
       }).catch(error => {
         console.error('🟣 Vinted auth error:', error);
@@ -1457,21 +1477,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           error: error.message || 'Unknown error',
           channel: 'vinted'
         };
-        console.log('🟣 Sending Vinted error response:', errorResponse);
+        debugLog('🟣 Sending Vinted error response:', errorResponse);
         sendResponse(errorResponse);
       });
     } else {
       // Default to Depop
-      console.log('🟡 Processing Depop auth request');
+      debugLog('🟡 Processing Depop auth request');
+      debugLog('🟡 DEPOP ONLY: Will authenticate ONLY Depop, not Vinted or other platforms');
       getDepopTokensViaContentScript(request.userIdentifier).then(result => {
-        console.log('🟡 Depop auth result:', result);
+        debugLog('🟡 Depop auth result:', result);
         const response = {
           success: result?.success || false,
           error: result?.success ? null : (result?.message || result?.error || 'Unknown error'),
           message: result?.success ? result?.message : null,
           channel: 'depop'
         };
-        console.log('🟡 Sending Depop response to content script:', response);
+        debugLog('🟡 Sending Depop response to content script:', response);
         sendResponse(response);
       }).catch(error => {
         console.error('🟡 Depop auth error:', error);
@@ -1480,7 +1501,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           error: error.message || 'Unknown error',
           channel: 'depop'
         };
-        console.log('🟡 Sending Depop error response:', errorResponse);
+        debugLog('🟡 Sending Depop error response:', errorResponse);
         sendResponse(errorResponse);
       });
     }
@@ -1491,10 +1512,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 // Function to handle Vinted listing creation
 async function handleVintedListingCreation(request) {
-  console.log('🚀 VINTED LISTING: Starting listing creation process');
-  console.log('📋 VINTED LISTING: Request data:', { fid: request.fid, vid: request.vid, uid: request.uid });
+  debugLog('🚀 VINTED LISTING: Starting listing creation process');
+  debugLog('📋 VINTED LISTING: Request data:', { fid: request.fid, vid: request.vid, uid: request.uid });
 
-  const { payload, headers, endpoint, method, fid, vid, uid } = request;
+  const { payload, headers, endpoint, method, fid, vid, uid, cookies } = request;
+  
+  // Extract cookies from headers if provided (backend fallback)
+  const backendCookies = cookies || (headers && headers.cookies) || null;
 
   // Validate required parameters
   if (!fid) {
@@ -1507,7 +1531,7 @@ async function handleVintedListingCreation(request) {
     throw new Error('Missing required parameter: uid');
   }
 
-  console.log(`✅ VINTED LISTING: Parameters validated - FID: ${fid}, VID: ${vid}, UID: ${uid}`);
+    debugLog(`✅ VINTED LISTING: Parameters validated - FID: ${fid}, VID: ${vid}, UID: ${uid}`);
 
   try {
     // Extract base URL from endpoint to get the right domain, or use stored preference
@@ -1520,10 +1544,28 @@ async function handleVintedListingCreation(request) {
       baseUrl = await getVintedDomainPreference();
     }
     
-    console.log('🎯 Using dynamic Vinted domain for listing creation:', baseUrl);
+    debugLog('🎯 Using dynamic Vinted domain for listing creation:', baseUrl);
     
-    // First, ensure we have valid cookies for the specific domain
-    const cookieString = await getVintedHeadersCookies(baseUrl);
+    // First, try to get cookies from extension, with backend cookies as fallback
+    let cookieString = null;
+    
+    try {
+      // Try to get fresh cookies from extension
+      cookieString = await getVintedHeadersCookies(baseUrl, true);
+      debugLog('✅ VINTED LISTING: Got fresh cookies from extension');
+    } catch (extensionError) {
+      debugLog('⚠️ VINTED LISTING: Extension cookie extraction failed:', extensionError.message);
+      
+      // Fallback to backend-provided cookies
+      if (backendCookies && backendCookies.trim()) {
+        cookieString = backendCookies.trim();
+        debugLog('🔄 VINTED LISTING: Using backend-provided cookies as fallback');
+        debugLog('📊 VINTED LISTING: Backend cookie length:', cookieString.length);
+        debugLog('🍪 VINTED LISTING: Backend cookie source:', cookies ? 'direct cookies param' : 'headers.cookies');
+      } else {
+        debugLog('❌ VINTED LISTING: No backend cookies provided as fallback');
+      }
+    }
 
     if (!cookieString) {
       throw new Error('No Vinted cookies found - user needs to authenticate');
@@ -1531,7 +1573,7 @@ async function handleVintedListingCreation(request) {
 
     // Check if we have access_token_web cookie
     const hasAccessTokenWeb = cookieString.includes('access_token_web=');
-    console.log('🔍 access_token_web check:', hasAccessTokenWeb ? '✅ PRESENT' : '❌ MISSING');
+    debugLog('🔍 access_token_web check:', hasAccessTokenWeb ? '✅ PRESENT' : '❌ MISSING');
 
     if (!hasAccessTokenWeb) {
       throw new Error('Missing access_token_web cookie - Vinted session expired');
@@ -1554,22 +1596,22 @@ async function handleVintedListingCreation(request) {
       'Sec-Fetch-Site': 'same-origin'
     };
 
-    // Add CSRF token if provided - this is crucial for Vinted
-    if (headers && headers.csrf_token) {
-      requestHeaders['X-CSRF-token'] = headers.csrf_token;
-      console.log('🔐 VINTED LISTING: Added CSRF token from backend');
-    } else {
-      console.warn('⚠️ VINTED LISTING: No CSRF token provided - request may fail');
-    }
-
     // Add anon_id if provided
     if (headers && headers.anon_id) {
       requestHeaders['X-Anon-Id'] = headers.anon_id;
-      console.log('🆔 VINTED LISTING: Added anon ID from backend');
+      debugLog('🆔 VINTED LISTING: Added anon ID from backend');
     }
 
-    console.log('📡 VINTED LISTING: Making request to:', endpoint);
-    console.log('📦 VINTED LISTING: Payload size:', JSON.stringify(payload).length, 'chars');
+    // Add CSRF token if provided - this is crucial for Vinted
+    if (headers && headers.csrf_token) {
+      requestHeaders['X-CSRF-token'] = headers.csrf_token;
+      debugLog('🔐 VINTED LISTING: Added CSRF token from backend');
+    } else {
+      debugLog('⚠️ VINTED LISTING: No CSRF token provided - request may fail');
+    }
+
+    debugLog('📡 VINTED LISTING: Making request to:', endpoint);
+    debugLog('📦 VINTED LISTING: Payload size:', JSON.stringify(payload).length, 'chars');
 
     // Make the actual request to Vinted
     const response = await fetch(endpoint, {
@@ -1579,12 +1621,12 @@ async function handleVintedListingCreation(request) {
       redirect: 'manual'
     });
 
-    console.log('📡 VINTED LISTING: Response status:', response.status);
+    debugLog('📡 VINTED LISTING: Response status:', response.status);
 
     const responseData = await response.json();
 
     if (response.ok && responseData.item && responseData.item.id) {
-      console.log('✅ VINTED LISTING: Success! Item ID:', responseData.item.id);
+      debugLog('✅ VINTED LISTING: Success! Item ID:', responseData.item.id);
 
       // Send success callback to WordPress
       const callbackResult = await sendVintedCallbackToWordPress({
@@ -1602,7 +1644,7 @@ async function handleVintedListingCreation(request) {
         channel: 'vinted'
       };
     } else {
-      console.log('❌ VINTED LISTING: Failed with response:', responseData);
+      debugLog('❌ VINTED LISTING: Failed with response:', responseData);
 
       // Extract error message
       let errorMessage = 'Failed to list on Vinted';
@@ -1633,20 +1675,21 @@ async function handleVintedListingCreation(request) {
         errorMessage = responseData.message;
       }
 
-      console.log('🔍 VINTED ERROR: Extracted message:', errorMessage);
+      debugLog('🔍 VINTED ERROR: Extracted message:', errorMessage);
 
-      if (responseData.code) {
-        errorCode = responseData.code;
-      }
+      if (responseData.code) errorCode = responseData.code;
 
       // Send error callback to WordPress
       await sendVintedCallbackToWordPress({
         success: false,
+        location: 'else',
         error: errorMessage,
         error_code: errorCode,
         fid: fid,
         vid: vid,
-        uid: uid
+        uid: uid,
+        response: responseData,
+        body: payload,
       });
 
       return {
@@ -1663,19 +1706,26 @@ async function handleVintedListingCreation(request) {
     // Send error callback to WordPress
     await sendVintedCallbackToWordPress({
       success: false,
+      location: 'try-catch',
       error: error.message,
       fid: fid,
       vid: vid,
-      uid: uid
+      uid: uid,
+      body: payload,
     });
 
-    throw error;
+    // Return error response instead of throwing to allow frontend to handle properly
+    return {
+      success: false,
+      error: error.message,
+      channel: 'vinted'
+    };
   }
 }
 
 // Function to send callback to WordPress after Vinted listing attempt
 async function sendVintedCallbackToWordPress(data) {
-  console.log('📤 Sending callback to WordPress:', data);
+  debugLog('📤 Sending callback to FLUF:', data);
 
   const endpoints = [
     'http://localhost:10006/wp-json/fc/listings/v1/vinted-extension-callback',
@@ -1688,7 +1738,7 @@ async function sendVintedCallbackToWordPress(data) {
 
   for (const endpoint of endpoints) {
     try {
-      console.log(`🔄 Trying callback endpoint: ${endpoint}`);
+      debugLog(`🔄 Trying callback endpoint: ${endpoint}`);
 
       const response = await fetch(endpoint, {
         method: 'POST',
@@ -1700,7 +1750,7 @@ async function sendVintedCallbackToWordPress(data) {
 
       if (response.ok) {
         const result = await response.json();
-        console.log(`✅ Callback successful at ${endpoint}:`, result);
+        debugLog(`✅ Callback successful at ${endpoint}:`, result);
         results.push({ endpoint, success: true, result });
 
         // Store first successful result but continue trying other endpoints
@@ -1708,7 +1758,7 @@ async function sendVintedCallbackToWordPress(data) {
           firstSuccessfulResult = result;
         }
       } else {
-        console.log(`❌ Callback failed at ${endpoint}: ${response.status} ${response.statusText}`);
+        debugLog(`❌ Callback failed at ${endpoint}: ${response.status} ${response.statusText}`);
         results.push({ endpoint, success: false, status: response.status });
       }
     } catch (error) {
@@ -1720,23 +1770,23 @@ async function sendVintedCallbackToWordPress(data) {
   // Log summary of all attempts
   const successful = results.filter(r => r.success).length;
   const failed = results.length - successful;
-  console.log(`📊 Callback summary: ${successful} successful, ${failed} failed out of ${results.length} endpoints`);
+  debugLog(`📊 Callback summary: ${successful} successful, ${failed} failed out of ${results.length} endpoints`);
 
   if (firstSuccessfulResult) {
-    console.log('✅ Returning first successful result');
+    debugLog('✅ Returning first successful result');
     return firstSuccessfulResult;
   } else {
-    console.log('❌ All callback endpoints failed');
+    debugLog('❌ All callback endpoints failed');
     return null;
   }
 }
 
 // Function to send the token to the WordPress API using fetch
 function sendTokenToAPI(extractedData, sourceUrl = "", userIdentifier = "", sendResponse = null) {
-  const { accessToken, userId, csrfToken, channel, fullCookies, anonId, vintedUsername, baseUrl } = extractedData;
+  const { accessToken, userId, channel, fullCookies, anonId, vintedUsername, baseUrl } = extractedData;
 
   if (!channel) {
-    console.log("No channel detected");
+    debugLog("No channel detected");
     if (sendResponse) {
       sendResponse({
         success: false,
@@ -1748,7 +1798,7 @@ function sendTokenToAPI(extractedData, sourceUrl = "", userIdentifier = "", send
 
   // Validate required data based on channel
   if (channel === 'depop' && (!accessToken || !userId)) {
-    console.log("No Depop token or user_id found");
+    debugLog("No Depop token or user_id found");
     if (sendResponse) {
       sendResponse({
         success: false,
@@ -1759,7 +1809,7 @@ function sendTokenToAPI(extractedData, sourceUrl = "", userIdentifier = "", send
   }
 
   if (channel === 'vinted' && !fullCookies) {
-    console.log("No Vinted cookies found");
+    debugLog("No Vinted cookies found");
     if (sendResponse) {
       sendResponse({
         success: false,
@@ -1770,7 +1820,7 @@ function sendTokenToAPI(extractedData, sourceUrl = "", userIdentifier = "", send
   }
 
   // Send to both endpoints
-  console.log("Sending data to both localhost and production endpoints");
+  debugLog("Sending data to both localhost and production endpoints");
 
   // Build request body based on channel
   let requestBody = {
@@ -1785,24 +1835,19 @@ function sendTokenToAPI(extractedData, sourceUrl = "", userIdentifier = "", send
 
     // Verify access_token_web is included in the aggregated cookies
     const hasAccessTokenWeb = fullCookies.includes('access_token_web');
-    console.log('🔍 VERIFYING VINTED COOKIES:');
-    console.log(' - access_token_web present:', hasAccessTokenWeb ? '✅ YES' : '❌ NO');
-    console.log(' - Total cookie string length:', fullCookies.length);
+    debugLog('🔍 VERIFYING VINTED COOKIES:');
+    debugLog(' - access_token_web present:', hasAccessTokenWeb ? '✅ YES' : '❌ NO');
+    debugLog(' - Total cookie string length:', fullCookies.length);
 
     if (hasAccessTokenWeb) {
       // Extract and log a preview of the access_token_web value
       const accessTokenMatch = fullCookies.match(/access_token_web=([^;]+)/);
       if (accessTokenMatch) {
-        console.log(' - access_token_web value length:', accessTokenMatch[1].length);
-        console.log(' - access_token_web preview:', accessTokenMatch[1].substring(0, 50) + '...');
+        debugLog(' - access_token_web value length:', accessTokenMatch[1].length);
+        debugLog(' - access_token_web preview:', accessTokenMatch[1].substring(0, 50) + '...');
       }
     }
 
-
-
-    if (csrfToken) {
-      requestBody.csrf_token = csrfToken;
-    }
     if (userId) {
       requestBody.user_id = userId;
     }
@@ -1828,49 +1873,49 @@ function sendTokenToAPI(extractedData, sourceUrl = "", userIdentifier = "", send
   }
 
   // Add userIdentifier if provided (should be the WordPress UID or RID)
-  console.log("🔍 DEBUG: userIdentifier parameter:", userIdentifier, "type:", typeof userIdentifier);
+  debugLog("🔍 DEBUG: userIdentifier parameter:", userIdentifier, "type:", typeof userIdentifier);
   if (userIdentifier) {
     requestBody.userIdentifier = userIdentifier;
-    console.log("✅ Using WordPress user identifier:", userIdentifier);
+    debugLog("✅ Using WordPress user identifier:", userIdentifier);
   } else {
-    console.log("❌ No userIdentifier provided - this will cause issues!");
+    debugLog("❌ No userIdentifier provided - this will cause issues!");
   }
 
-  console.log("Sending data to API:", { ...requestBody, cookies: requestBody.cookies ? '[REDACTED]' : undefined });
-  console.log("Endpoints:", ENDPOINTS);
+  debugLog("Sending data to API:", { ...requestBody, cookies: requestBody.cookies ? '[REDACTED]' : undefined });
+  debugLog("Endpoints:", ENDPOINTS);
   
   // Log Vinted-specific fields for debugging
   if (channel === 'vinted') {
-    console.log('🟣 VINTED API DATA:');
-    console.log(' - base_url:', requestBody.base_url);
-    console.log(' - country:', requestBody.country);
-    console.log(' - user_id:', requestBody.user_id);
-    console.log(' - has_access_token_web:', requestBody.has_access_token_web);
+    debugLog('🟣 VINTED API DATA:');
+    debugLog(' - base_url:', requestBody.base_url);
+    debugLog(' - country:', requestBody.country);
+    debugLog(' - user_id:', requestBody.user_id);
+    debugLog(' - has_access_token_web:', requestBody.has_access_token_web);
   }
 
   // Add additional logging for debugging
-  console.log("Source URL:", sourceUrl);
-  console.log("User Identifier:", userIdentifier);
-  console.log("Channel:", channel);
+  debugLog("Source URL:", sourceUrl);
+  debugLog("User Identifier:", userIdentifier);
+  debugLog("Channel:", channel);
 
   // Additional validation for Vinted cookies
   if (channel === 'vinted' && requestBody.cookies) {
-    console.log('📋 FINAL VINTED COOKIE VALIDATION:');
-    console.log(' - Total cookies being sent:', requestBody.cookies.split(';').length);
-    console.log(' - Cookie names being sent:', requestBody.cookies.split(';').map(c => c.split('=')[0].trim()).join(', '));
-    console.log(' - access_token_web included:', requestBody.cookies.includes('access_token_web') ? '✅ YES' : '❌ NO');
+    debugLog('📋 FINAL VINTED COOKIE VALIDATION:');
+    debugLog(' - Total cookies being sent:', requestBody.cookies.split(';').length);
+    debugLog(' - Cookie names being sent:', requestBody.cookies.split(';').map(c => c.split('=')[0].trim()).join(', '));
+    debugLog(' - access_token_web included:', requestBody.cookies.includes('access_token_web') ? '✅ YES' : '❌ NO');
 
-    console.log(' - vinted_fr_session included:', requestBody.cookies.includes('vinted_fr_session') ? '✅ YES' : '❌ NO');
-    console.log(' - anon_id included:', requestBody.cookies.includes('anon_id') ? '✅ YES' : '❌ NO');
+    debugLog(' - vinted_fr_session included:', requestBody.cookies.includes('vinted_fr_session') ? '✅ YES' : '❌ NO');
+    debugLog(' - anon_id included:', requestBody.cookies.includes('anon_id') ? '✅ YES' : '❌ NO');
 
     // Check for critical cookies for crosslisting
     const criticalCookies = ['access_token_web', 'anon_id'];
     const missingCritical = criticalCookies.filter(cookie => !requestBody.cookies.includes(cookie));
 
     if (missingCritical.length > 0) {
-      console.log('⚠️ WARNING: Missing critical cookies for crosslisting:', missingCritical.join(', '));
+      debugLog('⚠️ WARNING: Missing critical cookies for crosslisting:', missingCritical.join(', '));
     } else {
-      console.log('✅ All critical cookies present for crosslisting');
+      debugLog('✅ All critical cookies present for crosslisting');
     }
   }
 
@@ -1884,7 +1929,7 @@ function sendTokenToAPI(extractedData, sourceUrl = "", userIdentifier = "", send
       body: JSON.stringify(requestBody)
     })
       .then(async response => {
-        console.log(`API response status for ${endpoint}:`, response.status);
+        debugLog(`API response status for ${endpoint}:`, response.status);
         if (response.ok) {
           const data = await response.json();
           return { endpoint, success: true, data };
@@ -1912,14 +1957,14 @@ function sendTokenToAPI(extractedData, sourceUrl = "", userIdentifier = "", send
   // Wait for all requests to complete
   Promise.all(fetchPromises)
     .then(results => {
-      console.log("All API responses:", results);
+      debugLog("All API responses:", results);
 
       // Check if at least one request succeeded
       const successfulResults = results.filter(result => result.success);
       const failedResults = results.filter(result => !result.success);
 
       if (successfulResults.length > 0) {
-        logStatus(`Data sent successfully at ${new Date().toLocaleString()}`, true);
+        logStatus(`Data sent successfully`, true);
 
         if (sendResponse) {
           sendResponse({
@@ -1930,8 +1975,6 @@ function sendTokenToAPI(extractedData, sourceUrl = "", userIdentifier = "", send
           });
         }
       } else {
-        const errorMessage = `Failed to send to all endpoints: ${failedResults.map(r => `${r.endpoint}: ${r.error}`).join(', ')}`;
-        logStatus(`Error: ${errorMessage}`, false);
 
         if (sendResponse) {
           sendResponse({
