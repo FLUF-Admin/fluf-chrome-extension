@@ -1,0 +1,58 @@
+{
+  "manifest_version": 3,
+  "name": "FLUF Connect Utility Extension",
+  "version": "1.7.1",
+  "description": "Supports the functionality of FLUF Connect (fluf.io/connect)",
+  "permissions": [
+    "alarms",
+    "storage",
+    "scripting",
+    "tabs",
+    "webRequest",
+    "debugger",
+    "cookies"
+  ],
+  "host_permissions": [
+    "https://fluf.io/*",
+    "https://www.depop.com/*",
+    "https://www.vinted.co.uk/*",
+    "https://vinted.co.uk/*",
+    "https://www.vinted.com/*",
+    "https://vinted.com/*",
+    "https://www.vinted.at/*",
+    "https://www.vinted.be/*",
+    "https://www.vinted.cz/*",
+    "https://www.vinted.de/*",
+    "https://www.vinted.dk/*",
+    "https://www.vinted.es/*",
+    "https://www.vinted.fi/*",
+    "https://www.vinted.fr/*",
+    "https://www.vinted.gr/*",
+    "https://www.vinted.hr/*",
+    "https://www.vinted.hu/*",
+    "https://www.vinted.ie/*",
+    "https://www.vinted.it/*",
+    "https://www.vinted.lt/*",
+    "https://www.vinted.lu/*",
+    "https://www.vinted.nl/*",
+    "https://www.vinted.pl/*",
+    "https://www.vinted.pt/*",
+    "https://www.vinted.ro/*",
+    "https://www.vinted.se/*",
+    "https://www.vinted.sk/*",
+    "http://localhost/*",
+    "http://fluf.local/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://fluf.io/*", "http://localhost/*", "http://fluf.local/*"],
+      "js": ["content.js"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  }
+}

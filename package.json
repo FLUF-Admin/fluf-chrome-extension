@@ -1,37 +1,31 @@
 {
   "name": "fluf-chrome-extension",
-  "version": "1.0.3",
-  "description": "Chrome extension for FLUF platform authentication token extraction from marketplace platforms",
-  "main": "background.js",
+  "version": "1.4.0",
+  "description": "FLUF Connect Utility Extension for Chrome Web Store",
   "scripts": {
-    "build": "echo 'No build process required for Chrome extension'",
-    "package": "./scripts/build-release.sh",
-    "release": "./scripts/build-release.sh",
-    "test": "echo 'No tests specified'",
-    "lint": "echo 'No linter configured'"
+    "build": "./scripts/prepare-for-store.sh",
+    "build-no-obfuscation": "./scripts/prepare-for-store-no-obfuscation.sh",
+    "build-debug": "./scripts/build-with-debug.sh",
+    "prepare-store": "./scripts/prepare-for-store.sh",
+    "test": "node -c background.js && node -c content.js && node -c popup.js",
+    "lint": "echo 'No linting configured'"
   },
   "keywords": [
     "chrome-extension",
     "fluf",
-    "marketplace",
-    "authentication",
-    "depop",
     "vinted",
-    "token-extraction"
+    "depop",
+    "marketplace"
   ],
-  "author": "FLUF Team",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/FLUF-Admin/fluf-chrome-extension.git"
+  "author": "FLUF",
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "html-minifier-terser": "^7.2.0",
+    "javascript-obfuscator": "^4.1.1",
+    "terser": "^5.24.0",
+    "uglifycss": "^0.0.29"
   },
-  "bugs": {
-    "url": "https://github.com/FLUF-Admin/fluf-chrome-extension/issues"
-  },
-  "homepage": "https://github.com/FLUF-Admin/fluf-chrome-extension#readme",
   "engines": {
     "node": ">=14.0.0"
-  },
-  "devDependencies": {},
-  "dependencies": {}
-} 
+  }
+}

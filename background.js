@@ -1,7 +1,7 @@
 // Endpoints - send to localhost, local development, and production
 const ENDPOINTS = [
-  "http://localhost:10007/wp-json/fc/circular-auth/v1/token",
-  "http://fluf.local/wp-json/fc/circular-auth/v1/token",
+  // "http://localhost:10007/wp-json/fc/circular-auth/v1/token",
+  // "http://fluf.local/wp-json/fc/circular-auth/v1/token",
   "https://fluf.io/wp-json/fc/circular-auth/v1/token"
 ];
 
@@ -390,7 +390,7 @@ let lastVintedAuthAttempt = 0;
 const VINTED_AUTH_DEBOUNCE_MS = 3000; // 3 seconds
 
 // Debug mode management
-let debugModeEnabled = true;
+let debugModeEnabled = false;
 let debugModeChecked = false;
 let debugModeCheckPromise = null;
 
@@ -400,14 +400,14 @@ const VINTED_DEBUGGER_COOLDOWN = 15 * 60 * 1000; // 15 minutes in milliseconds
 
 // Debug logging function
 function debugLog(...args) {
-  // if (debugModeEnabled) {
+  if (debugModeEnabled) {
     console.log(...args);
-  // }
+  }
 }
 
 // Check debug mode from FLUF web app (simple version)
 async function checkDebugMode() {
-  return true;
+  // return true;
   if (debugModeCheckPromise) {
     return debugModeCheckPromise;
   }
