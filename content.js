@@ -137,6 +137,37 @@ window.addEventListener('message', async function(event) {
             }, '*');
         }
     }
+    
+    // Close duplicate Vinted tabs
+    else if (type === 'FCU_CLOSE_DUPLICATE_VINTED_TABS') {
+        console.log('🧹 Duplicate Vinted tabs cleanup requested');
+        
+        try {
+            chrome.runtime.sendMessage({
+                action: 'FCU_CLOSE_DUPLICATE_VINTED_TABS'
+            }, (response) => {
+                if (chrome.runtime.lastError) {
+                    console.error('🧹 Extension context error:', chrome.runtime.lastError.message);
+                    window.postMessage({
+                        type: 'FCU_CLOSE_DUPLICATE_VINTED_TABS_RESPONSE',
+                        data: { success: false, error: 'Extension context invalidated' }
+                    }, '*');
+                } else {
+                    console.log('🧹 Cleanup response:', response);
+                    window.postMessage({
+                        type: 'FCU_CLOSE_DUPLICATE_VINTED_TABS_RESPONSE',
+                        data: response
+                    }, '*');
+                }
+            });
+        } catch (error) {
+            console.error('🧹 Error requesting cleanup:', error);
+            window.postMessage({
+                type: 'FCU_CLOSE_DUPLICATE_VINTED_TABS_RESPONSE',
+                data: { success: false, error: error.message }
+            }, '*');
+        }
+    }
 
 
     // Marketplace Authentication - supports both new descriptive names and legacy names

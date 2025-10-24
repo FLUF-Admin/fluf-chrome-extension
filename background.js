@@ -389,6 +389,53 @@ let globalVintedExtractionInProgress = false;
 let lastVintedAuthAttempt = 0;
 const VINTED_AUTH_DEBOUNCE_MS = 3000; // 3 seconds
 
+// Helper function to close duplicate Vinted tabs, keeping only one
+async function closeDuplicateVintedTabs(keepTabId = null) {
+  try {
+    const allVintedTabs = await chrome.tabs.query({
+      url: VINTED_DOMAINS.map(domain => `*://${domain}/*`)
+    });
+    
+    if (allVintedTabs.length <= 1) {
+      debugLog('✅ VINTED: Only one tab exists, no duplicates to close');
+      return;
+    }
+    
+    debugLog(`🧹 VINTED: Found ${allVintedTabs.length} Vinted tabs, closing duplicates...`);
+    
+    // Sort by last accessed time (keep the most recently used)
+    const sortedTabs = allVintedTabs.sort((a, b) => {
+      // If we specified a tab to keep, prioritize it
+      if (keepTabId) {
+        if (a.id === keepTabId) return -1;
+        if (b.id === keepTabId) return 1;
+      }
+      // Otherwise keep the most recently accessed
+      return (b.lastAccessed || 0) - (a.lastAccessed || 0);
+    });
+    
+    // Keep the first tab, close the rest
+    const tabToKeep = sortedTabs[0];
+    const tabsToClose = sortedTabs.slice(1);
+    
+    debugLog(`🧹 VINTED: Keeping tab ${tabToKeep.id} (${tabToKeep.url})`);
+    debugLog(`🧹 VINTED: Closing ${tabsToClose.length} duplicate tabs`);
+    
+    for (const tab of tabsToClose) {
+      try {
+        await chrome.tabs.remove(tab.id);
+        debugLog(`🗑️ VINTED: Closed duplicate tab ${tab.id}`);
+      } catch (error) {
+        debugLog(`❌ VINTED: Failed to close tab ${tab.id}:`, error.message);
+      }
+    }
+    
+    debugLog('✅ VINTED: Duplicate tab cleanup complete');
+  } catch (error) {
+    debugLog('❌ VINTED: Error during duplicate tab cleanup:', error);
+  }
+}
+
 // Debug mode management
 let debugModeEnabled = false;
 let debugModeChecked = false;
@@ -499,26 +546,53 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
     };
   }
   
-  // For manual triggers, allow bypassing the global lock
-  if (globalVintedExtractionInProgress && isManualTrigger) {
-    debugLog('🔓 VINTED: Manual trigger detected - bypassing global coordination lock');
-  }
-  
-  // Check if authentication is already in progress (unless manually triggered)
-  if (vintedCookiesExtractionLock && !isManualTrigger) {
-    debugLog('🔒 VINTED: Authentication already in progress, waiting...');
+  // Check if authentication is already in progress - ALWAYS wait, even for manual triggers
+  if (vintedCookiesExtractionLock || globalVintedExtractionInProgress) {
+    debugLog('🔒 VINTED: Authentication already in progress, waiting for completion...');
+    debugLog('🔒 VINTED: Manual trigger status:', isManualTrigger ? 'YES (will still wait)' : 'NO');
     
-    // Wait for the current authentication to complete
-    while (vintedCookiesExtractionLock) {
-      await new Promise(resolve => setTimeout(resolve, 100));
+    // Wait for the current authentication to complete (max 60 seconds)
+    const maxWaitTime = 60000; // 60 seconds
+    const startWait = Date.now();
+    
+    while ((vintedCookiesExtractionLock || globalVintedExtractionInProgress) && (Date.now() - startWait < maxWaitTime)) {
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
     
-    debugLog('🔓 VINTED: Previous authentication completed, retrying...');
-  }
-  
-  // For manual triggers, allow bypassing the local lock
-  if (vintedCookiesExtractionLock && isManualTrigger) {
-    debugLog('🔓 VINTED: Manual trigger detected - bypassing local authentication lock');
+    if (Date.now() - startWait >= maxWaitTime) {
+      debugLog('⏰ VINTED: Wait timeout reached, proceeding anyway (locks may be stale)');
+      // Reset stale locks
+      vintedCookiesExtractionLock = false;
+      globalVintedExtractionInProgress = false;
+    } else {
+      debugLog('🔓 VINTED: Previous authentication completed, checking for existing tabs before proceeding...');
+      
+      // Re-check for existing tabs after waiting - another process may have created one
+      const recheckTabs = await chrome.tabs.query({
+        url: VINTED_DOMAINS.map(domain => `*://${domain}/*`)
+      });
+      
+      if (recheckTabs.length > 0) {
+        debugLog('✅ VINTED: Found existing tab created by another process, using it instead');
+        // Extract cookies from the existing tab without creating a new one
+        const targetDomain = new URL(baseUrl).hostname;
+        const existingCookies = await chrome.cookies.getAll({ domain: targetDomain });
+        const cookieString = existingCookies.map(c => `${c.name}=${c.value}`).join('; ');
+        const accessTokenWeb = existingCookies.find(c => c.name === 'access_token_web');
+        
+        if (accessTokenWeb) {
+          return {
+            success: true,
+            cookieString: cookieString,
+            accessTokenWeb: accessTokenWeb.value,
+            anonId: existingCookies.find(c => c.name === 'anon_id')?.value || null,
+            totalCookies: existingCookies.length,
+            cookies: existingCookies,
+            tabKeptOpen: false // Didn't create new tab
+          };
+        }
+      }
+    }
   }
   
   // Set locks
@@ -533,10 +607,8 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
   let shouldKeepTabOpen = false;
   
   try {
-    // Step 1: Check for existing Vinted tab in current window
-    const currentWindow = await chrome.windows.getCurrent();
+    // Step 1: Check for existing Vinted tab in ALL windows (not just current)
     const existingTabs = await chrome.tabs.query({
-      windowId: currentWindow.id,
       url: VINTED_DOMAINS.map(domain => `*://${domain}/*`)
     });
     
@@ -744,6 +816,9 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
     
     debugLog('✅ VINTED: Success! Extracted', uniqueCookies.length, 'cookies');
     debugLog('🔑 VINTED access_token_web:', finalAccessTokenWeb.value.substring(0, 20) + '...');
+    
+    // Step 8: Clean up duplicate tabs (keep only the one we used)
+    await closeDuplicateVintedTabs(tab.id);
     
     // Update last check time on successful extraction
     lastVintedDebuggerCheck = Date.now();
@@ -1448,6 +1523,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse(status);
     }).catch(error => {
       sendResponse({ error: error.message });
+    });
+    return true; // Keep message channel open for async response
+  } else if (request.action === "FCU_CLOSE_DUPLICATE_VINTED_TABS") {
+    // Manual cleanup of duplicate Vinted tabs
+    debugLog('🧹 MANUAL CLEANUP: Closing duplicate Vinted tabs requested');
+    closeDuplicateVintedTabs().then(() => {
+      sendResponse({ success: true, message: 'Duplicate tabs cleaned up' });
+    }).catch(error => {
+      sendResponse({ success: false, error: error.message });
     });
     return true; // Keep message channel open for async response
   } else if (request.action === "FCU_VINTED_CREATE_LISTING") {
