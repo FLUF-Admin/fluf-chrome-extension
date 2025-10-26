@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FLUF Connect Utility Extension",
-  "version": "1.7.1",
+  "version": "1.7.2",
   "description": "Supports the functionality of FLUF Connect (fluf.io/connect)",
   "permissions": [
     "alarms",
@@ -9,7 +9,6 @@
     "scripting",
     "tabs",
     "webRequest",
-    "debugger",
     "cookies"
   ],
   "host_permissions": [

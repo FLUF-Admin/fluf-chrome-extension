@@ -9,7 +9,6 @@
     "scripting",
     "tabs",
     "webRequest",
-    "debugger",
     "cookies"
   ],
   "host_permissions": [

@@ -1,8 +1,8 @@
 // Endpoints - send to localhost, local development, and production
 const ENDPOINTS = [
-  // "http://localhost:10007/wp-json/fc/circular-auth/v1/token",
+  "http://localhost:10007/wp-json/fc/circular-auth/v1/token",
   // "http://fluf.local/wp-json/fc/circular-auth/v1/token",
-  "https://fluf.io/wp-json/fc/circular-auth/v1/token"
+  // "https://fluf.io/wp-json/fc/circular-auth/v1/token"
 ];
 
 // Vinted domain mapping
@@ -447,14 +447,14 @@ const VINTED_DEBUGGER_COOLDOWN = 15 * 60 * 1000; // 15 minutes in milliseconds
 
 // Debug logging function
 function debugLog(...args) {
-  if (debugModeEnabled) {
+  // if (debugModeEnabled) {
     console.log(...args);
-  }
+  // }
 }
 
 // Check debug mode from FLUF web app (simple version)
 async function checkDebugMode() {
-  // return true;
+  return true;
   if (debugModeCheckPromise) {
     return debugModeCheckPromise;
   }
@@ -546,10 +546,9 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
     };
   }
   
-  // Check if authentication is already in progress - ALWAYS wait, even for manual triggers
-  if (vintedCookiesExtractionLock || globalVintedExtractionInProgress) {
+  // Check if authentication is already in progress (manual triggers can bypass)
+  if ((vintedCookiesExtractionLock || globalVintedExtractionInProgress) && !isManualTrigger) {
     debugLog('🔒 VINTED: Authentication already in progress, waiting for completion...');
-    debugLog('🔒 VINTED: Manual trigger status:', isManualTrigger ? 'YES (will still wait)' : 'NO');
     
     // Wait for the current authentication to complete (max 60 seconds)
     const maxWaitTime = 60000; // 60 seconds
@@ -593,6 +592,8 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
         }
       }
     }
+  } else if (isManualTrigger && (vintedCookiesExtractionLock || globalVintedExtractionInProgress)) {
+    debugLog('🔓 VINTED: Manual trigger detected - bypassing locks for immediate user action');
   }
   
   // Set locks
@@ -1841,7 +1842,7 @@ async function sendVintedCallbackToWordPress(data) {
   debugLog('📤 Sending callback to FLUF:', data);
 
   const endpoints = [
-    'http://localhost:10006/wp-json/fc/listings/v1/vinted-extension-callback',
+    'http://localhost:10007/wp-json/fc/listings/v1/vinted-extension-callback',
     'https://fluf.io/wp-json/fc/listings/v1/vinted-extension-callback'
   ];
 

@@ -31,26 +31,19 @@ const existingTabs = await chrome.tabs.query({
 });
 ```
 
-### 2. Strengthened Lock Mechanism (`background.js` line 502-549)
+### 2. Strengthened Lock Mechanism (`background.js` line 549-597)
 
 **Key Improvements:**
-- ✅ **No more lock bypass** - Even manual triggers must wait for in-progress operations
+- ✅ **Smart lock bypass** - Manual triggers (user clicks "Reconnect") can bypass for immediate response
+- ✅ **Automatic requests wait** - Scheduled checks and frontend auto-refreshes must wait
 - ✅ **60-second max wait** with timeout protection for stale locks
 - ✅ **Re-check after waiting** - Verifies if another process created a tab while waiting
 - ✅ **Early return** - Uses existing cookies if another process created a tab
 
-**Before:**
+**Behavior:**
 ```javascript
-// Manual triggers could bypass locks
-if (vintedCookiesExtractionLock && isManualTrigger) {
-  debugLog('🔓 VINTED: Manual trigger - bypassing lock');
-}
-```
-
-**After:**
-```javascript
-// ALWAYS wait for in-progress operations
-if (vintedCookiesExtractionLock || globalVintedExtractionInProgress) {
+// Automatic requests must wait
+if ((locks active) && !isManualTrigger) {
   debugLog('🔒 VINTED: Authentication in progress, waiting...');
   
   // Wait up to 60 seconds
@@ -67,6 +60,8 @@ if (vintedCookiesExtractionLock || globalVintedExtractionInProgress) {
     // Use existing tab's cookies instead of creating new one
     return extractedCookies;
   }
+} else if (isManualTrigger && (locks active)) {
+  debugLog('🔓 VINTED: Manual trigger - bypassing locks for immediate user action');
 }
 ```
 
@@ -135,10 +130,17 @@ Forwards cleanup requests from web page to background script.
 ### Race Condition Prevention Flow
 
 ```
-Request 1 arrives → Sets locks → Checks for tabs → Creates tab if needed
-Request 2 arrives → Sees locks → WAITS 60s max → Re-checks → Uses existing tab
-Request 3 arrives → Sees locks → WAITS 60s max → Re-checks → Uses existing tab
+Automatic Request 1 → Sets locks → Checks for tabs → Creates tab if needed
+Automatic Request 2 → Sees locks → WAITS 60s max → Re-checks → Uses existing tab
+Automatic Request 3 → Sees locks → WAITS 60s max → Re-checks → Uses existing tab
+Manual Trigger      → Sees locks → BYPASSES (user action) → Uses existing tab or creates new
 ```
+
+**Why Manual Triggers Can Bypass:**
+- User explicitly clicked "Reconnect" button - expects immediate response
+- Better UX - no waiting for automatic background tasks
+- Still uses global tab search to find/reuse existing tabs
+- Duplicate cleanup ensures only one tab remains after auth
 
 ### Duplicate Detection & Cleanup
 
@@ -155,16 +157,21 @@ After successful authentication:
 
 ### Before Fix
 - ❌ New tab created for each authentication request
-- ❌ Multiple windows = multiple tab searches
-- ❌ Manual triggers bypass locks = duplicate tabs
+- ❌ Multiple windows = multiple tab searches (only searched current window)
+- ❌ Manual triggers bypass + window-scoped search = duplicate tabs
 - ❌ No cleanup of duplicates
 
 ### After Fix
-- ✅ Single tab reused across all windows
-- ✅ Race conditions prevented with locks + re-checks
-- ✅ All requests wait for in-progress operations
-- ✅ Automatic cleanup after successful authentication
+- ✅ Single tab reused across **all windows** (global search)
+- ✅ Race conditions prevented with locks + re-checks for automatic requests
+- ✅ Manual triggers can bypass locks for better UX (but still use global search)
+- ✅ Automatic cleanup after successful authentication prevents duplicates
 - ✅ Manual cleanup available via message
+
+**Key Insight:** The duplicate tab issue was primarily caused by window-scoped search, not lock bypass. Manual triggers can safely bypass because:
+1. Global tab search finds existing tabs across all windows
+2. Automatic cleanup removes any duplicates after auth
+3. Better UX for deliberate user actions
 
 ## Edge Cases Handled
 
@@ -190,4 +197,5 @@ Potential enhancements:
 - [ ] Configurable cleanup behavior (keep newest vs oldest)
 - [ ] Visual indicator when tabs are being managed
 - [ ] Settings panel for tab management preferences
+
 
