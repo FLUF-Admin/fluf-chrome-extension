@@ -1792,6 +1792,22 @@ async function handleVintedListingCreation(request) {
       debugLog('🔍 VINTED ERROR: Extracted message:', errorMessage);
 
       if (responseData.code) errorCode = responseData.code;
+      
+      // Enhance 2FA error message with guidance and link
+      if (errorCode === 146 || errorMessage.toLowerCase().includes('two factor') || responseData.message_code === 'entity_2fa_required') {
+        const vintedItemsNewUrl = `${originUrl}/items/new`;
+        errorMessage = `Required two factor authentication. Please manually create 1 listing at ${vintedItemsNewUrl} to receive and enter your 2FA code. After completing 2FA once, you should be able to list automatically.`;
+        debugLog('🔐 2FA Error detected - enhanced with guidance and link:', vintedItemsNewUrl);
+      }
+      
+      // Enhance auth-related error messages with link to /items/new
+      if (errorMessage.toLowerCase().includes('auth') || errorMessage.toLowerCase().includes('session') || errorMessage.toLowerCase().includes('token')) {
+        const vintedItemsNewUrl = `${originUrl}/items/new`;
+        if (!errorMessage.includes(vintedItemsNewUrl)) {
+          errorMessage = `${errorMessage} Please visit ${vintedItemsNewUrl} to refresh your Vinted session.`;
+          debugLog('🔐 Auth Error detected - enhanced with link:', vintedItemsNewUrl);
+        }
+      }
 
       // Send error callback to WordPress
       await sendVintedCallbackToWordPress({
