@@ -1,9 +1,11 @@
+const DEV_MODE = false;
+
 // Endpoints - send to localhost, local development, and production
-const ENDPOINTS = [
-  "http://localhost:10007/wp-json/fc/circular-auth/v1/token",
-  // "http://fluf.local/wp-json/fc/circular-auth/v1/token",
-  // "https://fluf.io/wp-json/fc/circular-auth/v1/token"
+const ENDPOINTS = DEV_MODE ? ["http://localhost:10007/wp-json/fc/circular-auth/v1/token"] : [
+  "http://fluf.local/wp-json/fc/circular-auth/v1/token",
+  "https://fluf.io/wp-json/fc/circular-auth/v1/token"
 ];
+
 
 // Vinted domain mapping
 const VINTED_DOMAINS = [
@@ -437,7 +439,7 @@ async function closeDuplicateVintedTabs(keepTabId = null) {
 }
 
 // Debug mode management
-let debugModeEnabled = false;
+let debugModeEnabled = DEV_MODE ? true : false;
 let debugModeChecked = false;
 let debugModeCheckPromise = null;
 
@@ -447,14 +449,15 @@ const VINTED_DEBUGGER_COOLDOWN = 15 * 60 * 1000; // 15 minutes in milliseconds
 
 // Debug logging function
 function debugLog(...args) {
-  // if (debugModeEnabled) {
+  if (DEV_MODE || debugModeEnabled) {
     console.log(...args);
-  // }
+  }
 }
 
 // Check debug mode from FLUF web app (simple version)
 async function checkDebugMode() {
-  return true;
+  if (DEV_MODE) return;
+
   if (debugModeCheckPromise) {
     return debugModeCheckPromise;
   }
@@ -1645,7 +1648,40 @@ async function handleVintedListingCreation(request) {
     throw new Error('Missing required parameter: uid');
   }
 
-    debugLog(`✅ VINTED LISTING: Parameters validated - FID: ${fid}, VID: ${vid}, UID: ${uid}`);
+  debugLog(`✅ VINTED LISTING: Parameters validated - FID: ${fid}, VID: ${vid}, UID: ${uid}`);
+
+  // DUPLICATE PREVENTION: Check if this VID was successfully listed in the last 24 hours
+  try {
+    const storage = await chrome.storage.local.get(['vinted_successful_listings']);
+    const successfulListings = storage.vinted_successful_listings || {};
+    
+    const listingKey = `${uid}_${vid}`;
+    const lastSuccess = successfulListings[listingKey];
+    
+    if (lastSuccess) {
+      const hoursSinceSuccess = (Date.now() - lastSuccess.timestamp) / (1000 * 60 * 60);
+      
+      if (hoursSinceSuccess < 24) {
+        debugLog(`⚠️ DUPLICATE PREVENTION: VID ${vid} was successfully listed ${hoursSinceSuccess.toFixed(1)} hours ago`);
+        debugLog(`⚠️ Vinted Item ID: ${lastSuccess.item_id}, skipping to prevent duplicate`);
+        
+        // Return the cached success result instead of creating duplicate
+        return {
+          success: true,
+          item_id: lastSuccess.item_id,
+          item_url: lastSuccess.item_url,
+          channel: 'vinted',
+          cached: true,
+          message: 'Already listed successfully within last 24 hours'
+        };
+      } else {
+        debugLog(`✅ Last success was ${hoursSinceSuccess.toFixed(1)} hours ago (>24h), allowing re-list`);
+      }
+    }
+  } catch (storageError) {
+    debugLog('⚠️ Error checking successful listings cache:', storageError);
+    // Continue anyway - don't block on storage errors
+  }
 
   try {
     // Extract base URL from endpoint to get the right domain, or use stored preference
@@ -1750,6 +1786,36 @@ async function handleVintedListingCreation(request) {
         vid: vid,
         uid: uid
       });
+
+      // DUPLICATE PREVENTION: Log successful listing to prevent duplicates within 24 hours
+      try {
+        const storage = await chrome.storage.local.get(['vinted_successful_listings']);
+        const successfulListings = storage.vinted_successful_listings || {};
+        
+        const listingKey = `${uid}_${vid}`;
+        successfulListings[listingKey] = {
+          item_id: responseData.item.id,
+          item_url: `${originUrl}/items/${responseData.item.id}`,
+          timestamp: Date.now(),
+          fid: fid,
+          vid: vid,
+          uid: uid
+        };
+        
+        // Clean up entries older than 48 hours to prevent storage bloat
+        const twoDaysAgo = Date.now() - (48 * 60 * 60 * 1000);
+        Object.keys(successfulListings).forEach(key => {
+          if (successfulListings[key].timestamp < twoDaysAgo) {
+            delete successfulListings[key];
+          }
+        });
+        
+        await chrome.storage.local.set({ vinted_successful_listings: successfulListings });
+        debugLog(`💾 DUPLICATE PREVENTION: Logged successful listing ${listingKey} (${Object.keys(successfulListings).length} total cached)`);
+      } catch (storageError) {
+        debugLog('⚠️ Error logging successful listing:', storageError);
+        // Continue anyway - don't fail the listing on storage errors
+      }
 
       return {
         success: true,
