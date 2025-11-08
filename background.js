@@ -391,6 +391,79 @@ let globalVintedExtractionInProgress = false;
 let lastVintedAuthAttempt = 0;
 const VINTED_AUTH_DEBOUNCE_MS = 3000; // 3 seconds
 
+let vintedListingQueue = [];
+let vintedListingProcessing = false;
+let vintedListingProcessingTimeout = null;
+let vintedListingRateDelayMs = 0;
+let lastVintedListingTime = 0;
+
+function enqueueVintedListingRequest(request, sendResponse) {
+  vintedListingQueue.push({ request, sendResponse });
+  processVintedListingQueue();
+}
+
+function getRandomDelay(minMs, maxMs) {
+  if (!Number.isFinite(minMs) || !Number.isFinite(maxMs)) {
+    return 0;
+  }
+  if (maxMs <= minMs) {
+    return minMs;
+  }
+  let range = maxMs - minMs;
+  return minMs + Math.floor(Math.random() * range);
+}
+
+async function processVintedListingQueue() {
+  if (vintedListingProcessing) {
+    return;
+  }
+  if (vintedListingQueue.length === 0) {
+    return;
+  }
+
+  vintedListingProcessing = true;
+  let { request, sendResponse } = vintedListingQueue.shift();
+
+  try {
+    let now = Date.now();
+    if (vintedListingRateDelayMs === 0) {
+      vintedListingRateDelayMs = getRandomDelay(60_000, 120_000);
+    }
+
+    let timeSinceLast = now - lastVintedListingTime;
+    if (timeSinceLast < vintedListingRateDelayMs) {
+      let waitMs = vintedListingRateDelayMs - timeSinceLast;
+      debugLog(`⏳ VINTED LISTING: Waiting ${Math.round(waitMs / 1000)} seconds before next listing`);
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+    }
+
+    let jitter = getRandomDelay(5_000, 15_000);
+    debugLog(`⏳ VINTED LISTING: Adding jitter delay ${Math.round(jitter / 1000)} seconds`);
+    await new Promise(resolve => setTimeout(resolve, jitter));
+
+    let result = await handleVintedListingCreation(request);
+    sendResponse(result);
+  } catch (queueError) {
+    console.error('❌ VINTED LISTING: Queue processing error:', queueError);
+    sendResponse({
+      success: false,
+      error: queueError?.message || 'Queue processing error',
+      channel: 'vinted'
+    });
+  } finally {
+    lastVintedListingTime = Date.now();
+    vintedListingProcessing = false;
+    vintedListingRateDelayMs = getRandomDelay(70_000, 140_000);
+
+    if (vintedListingQueue.length > 0) {
+      vintedListingProcessingTimeout = setTimeout(() => {
+        vintedListingProcessingTimeout = null;
+        processVintedListingQueue();
+      }, getRandomDelay(5_000, 12_000));
+    }
+  }
+}
+
 // Helper function to close duplicate Vinted tabs, keeping only one
 async function closeDuplicateVintedTabs(keepTabId = null) {
   try {
@@ -1543,18 +1616,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     debugLog("🚀 VINTED LISTING: Received create listing request from FLUF");
     debugLog("Request data:", request);
 
-    handleVintedListingCreation(request).then(result => {
+    enqueueVintedListingRequest(request, (result) => {
       debugLog("✅ VINTED LISTING: Result:", result);
       sendResponse(result);
-    }).catch(error => {
-      console.error("❌ VINTED LISTING: Error:", error);
-      sendResponse({
-        success: false,
-        error: error.message || 'Unknown error',
-        channel: 'vinted'
-      });
     });
-
+    
     return true; // Keep message channel open for async response
   } else if (request.action === "FCU_getTokenViaContentScript") {
     debugLog("Received getTokenViaContentScript via content.js message");
