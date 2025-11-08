@@ -427,7 +427,7 @@ async function processVintedListingQueue() {
   try {
     let now = Date.now();
     if (vintedListingRateDelayMs === 0) {
-      vintedListingRateDelayMs = getRandomDelay(60_000, 120_000);
+      vintedListingRateDelayMs = getRandomDelay(1_000, 10_000);
     }
 
     let timeSinceLast = now - lastVintedListingTime;
@@ -437,7 +437,7 @@ async function processVintedListingQueue() {
       await new Promise(resolve => setTimeout(resolve, waitMs));
     }
 
-    let jitter = getRandomDelay(5_000, 15_000);
+    let jitter = getRandomDelay(1_000, 5_000);
     debugLog(`⏳ VINTED LISTING: Adding jitter delay ${Math.round(jitter / 1000)} seconds`);
     await new Promise(resolve => setTimeout(resolve, jitter));
 
@@ -453,13 +453,13 @@ async function processVintedListingQueue() {
   } finally {
     lastVintedListingTime = Date.now();
     vintedListingProcessing = false;
-    vintedListingRateDelayMs = getRandomDelay(70_000, 140_000);
+    vintedListingRateDelayMs = getRandomDelay(1_000, 10_000);
 
     if (vintedListingQueue.length > 0) {
       vintedListingProcessingTimeout = setTimeout(() => {
         vintedListingProcessingTimeout = null;
         processVintedListingQueue();
-      }, getRandomDelay(5_000, 12_000));
+      }, getRandomDelay(1_000, 5_000));
     }
   }
 }
