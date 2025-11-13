@@ -1,8 +1,7 @@
 const DEV_MODE = false;
 
 // Endpoints - send to localhost, local development, and production
-const ENDPOINTS = DEV_MODE ? ["http://localhost:10007/wp-json/fc/circular-auth/v1/token"] : [
-  "http://fluf.local/wp-json/fc/circular-auth/v1/token",
+const ENDPOINTS = DEV_MODE ? ["http://localhost:10007/wp-json/fc/circular-auth/v1/token", "https://fluf.local/wp-json/fc/circular-auth/v1/token"] : [
   "https://fluf.io/wp-json/fc/circular-auth/v1/token"
 ];
 
@@ -724,24 +723,24 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
       });
       createdNewTab = true;
       shouldKeepTabOpen = true; // Keep new tabs open per user request
-      
+    
       debugLog('📱 Created new tab with URL:', targetUrl);
-      
+    
       // Wait for new tab to load with extended timeout for session refresh
-      await new Promise(resolve => {
-        const listener = (tabId, changeInfo) => {
-          if (tabId === tab.id && changeInfo.status === 'complete') {
-            chrome.tabs.onUpdated.removeListener(listener);
-            resolve();
-          }
-        };
-        chrome.tabs.onUpdated.addListener(listener);
-        setTimeout(() => {
+    await new Promise(resolve => {
+      const listener = (tabId, changeInfo) => {
+        if (tabId === tab.id && changeInfo.status === 'complete') {
           chrome.tabs.onUpdated.removeListener(listener);
           resolve();
+        }
+      };
+      chrome.tabs.onUpdated.addListener(listener);
+      setTimeout(() => {
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
         }, 90000); // 90 second timeout for session refresh
-      });
-      
+    });
+    
       debugLog('✅ New Vinted tab loaded');
     }
     
@@ -1620,7 +1619,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       debugLog("✅ VINTED LISTING: Result:", result);
       sendResponse(result);
     });
-    
+
     return true; // Keep message channel open for async response
   } else if (request.action === "FCU_getTokenViaContentScript") {
     debugLog("Received getTokenViaContentScript via content.js message");
@@ -1714,7 +1713,7 @@ async function handleVintedListingCreation(request) {
     throw new Error('Missing required parameter: uid');
   }
 
-  debugLog(`✅ VINTED LISTING: Parameters validated - FID: ${fid}, VID: ${vid}, UID: ${uid}`);
+    debugLog(`✅ VINTED LISTING: Parameters validated - FID: ${fid}, VID: ${vid}, UID: ${uid}`);
 
   // DUPLICATE PREVENTION: Check if this VID was successfully listed in the last 24 hours
   try {
