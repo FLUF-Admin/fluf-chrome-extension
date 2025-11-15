@@ -426,18 +426,22 @@ async function processVintedListingQueue() {
   try {
     let now = Date.now();
     if (vintedListingRateDelayMs === 0) {
-      vintedListingRateDelayMs = getRandomDelay(1_000, 10_000);
+      // HUMAN-LIKE TIMING: Increase delays to 30-60 seconds (was 1-10 seconds)
+      // This prevents captcha triggers from rapid execution
+      vintedListingRateDelayMs = getRandomDelay(30_000, 60_000);
     }
 
     let timeSinceLast = now - lastVintedListingTime;
     if (timeSinceLast < vintedListingRateDelayMs) {
       let waitMs = vintedListingRateDelayMs - timeSinceLast;
-      debugLog(`⏳ VINTED LISTING: Waiting ${Math.round(waitMs / 1000)} seconds before next listing`);
+      debugLog(`⏳ VINTED LISTING: Waiting ${Math.round(waitMs / 1000)} seconds before next listing (human-like timing)`);
       await new Promise(resolve => setTimeout(resolve, waitMs));
     }
 
-    let jitter = getRandomDelay(1_000, 5_000);
-    debugLog(`⏳ VINTED LISTING: Adding jitter delay ${Math.round(jitter / 1000)} seconds`);
+    // HUMAN-LIKE TIMING: Increase jitter to 5-15 seconds (was 1-5 seconds)
+    // Adds natural variation to prevent pattern detection
+    let jitter = getRandomDelay(5_000, 15_000);
+    debugLog(`⏳ VINTED LISTING: Adding jitter delay ${Math.round(jitter / 1000)} seconds (human-like variation)`);
     await new Promise(resolve => setTimeout(resolve, jitter));
 
     let result = await handleVintedListingCreation(request);
@@ -452,13 +456,15 @@ async function processVintedListingQueue() {
   } finally {
     lastVintedListingTime = Date.now();
     vintedListingProcessing = false;
-    vintedListingRateDelayMs = getRandomDelay(1_000, 10_000);
+    // HUMAN-LIKE TIMING: Reset delay to 30-60 seconds for next item
+    vintedListingRateDelayMs = getRandomDelay(30_000, 60_000);
 
     if (vintedListingQueue.length > 0) {
+      // HUMAN-LIKE TIMING: Wait 5-15 seconds before processing next item (was 1-5 seconds)
       vintedListingProcessingTimeout = setTimeout(() => {
         vintedListingProcessingTimeout = null;
         processVintedListingQueue();
-      }, getRandomDelay(1_000, 5_000));
+      }, getRandomDelay(5_000, 15_000));
     }
   }
 }
