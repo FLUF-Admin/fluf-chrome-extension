@@ -168,6 +168,44 @@ window.addEventListener('message', async function(event) {
             }, '*');
         }
     }
+    
+    // Debug mode toggle from web app
+    else if (type === 'FLUF_DEBUG_MODE_SET') {
+        console.log('🔧 Debug mode toggle requested from web app:', payload.enabled);
+        
+        try {
+            chrome.runtime.sendMessage({
+                action: 'setDebugMode',
+                enabled: payload.enabled
+            }, (response) => {
+                if (chrome.runtime.lastError) {
+                    console.error('🔧 Extension context error:', chrome.runtime.lastError.message);
+                    window.postMessage({
+                        type: 'FLUF_DEBUG_MODE_SET_RESPONSE',
+                        success: false,
+                        error: 'Extension context invalidated',
+                        debugEnabled: false
+                    }, '*');
+                } else {
+                    console.log('🔧 Debug mode response from background:', response);
+                    window.postMessage({
+                        type: 'FLUF_DEBUG_MODE_SET_RESPONSE',
+                        success: response?.success !== false,
+                        debugEnabled: response?.debugEnabled !== undefined ? response.debugEnabled : payload.enabled,
+                        error: response?.error || null
+                    }, '*');
+                }
+            });
+        } catch (error) {
+            console.error('🔧 Error setting debug mode:', error);
+            window.postMessage({
+                type: 'FLUF_DEBUG_MODE_SET_RESPONSE',
+                success: false,
+                error: error.message,
+                debugEnabled: false
+            }, '*');
+        }
+    }
 
 
     // Marketplace Authentication - supports both new descriptive names and legacy names

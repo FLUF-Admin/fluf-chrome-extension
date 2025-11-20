@@ -175,8 +175,70 @@ async function getDepopTokensDirectly() {
 
 async function getVintedTokensDirectly() {
   debugLog('🔄 SCHEDULED VINTED CHECK');
+  
+  // Try to get userIdentifier from storage (set during last manual auth)
+  let userIdentifier = null;
+  try {
+    const storage = await chrome.storage.local.get(['vinted_last_user_identifier']);
+    userIdentifier = storage.vinted_last_user_identifier || null;
+    debugLog('🔍 Retrieved stored userIdentifier:', userIdentifier);
+  } catch (error) {
+    debugLog('⚠️ Error retrieving stored userIdentifier:', error);
+  }
+  
+  // Fallback: Try to get userIdentifier from active FLUF Connect tab
+  if (!userIdentifier) {
+    try {
+      const tabs = await chrome.tabs.query({ 
+        url: ['*://fluf.io/*', '*://fluf.local/*', '*://localhost/*'] 
+      });
+      
+      if (tabs.length > 0) {
+        // Try to get userIdentifier from the first FLUF tab
+        try {
+          const results = await chrome.scripting.executeScript({
+            target: { tabId: tabs[0].id },
+            func: () => {
+              // Try to get from cookie
+              const cookieMatch = document.cookie.match(/fc_user_identifier=([^;]+)/);
+              if (cookieMatch) return cookieMatch[1];
+              
+              // Try to get from DOM element
+              const element = document.getElementById('fc-user-identifier');
+              if (element) {
+                return element.getAttribute('data-user-id') || element.textContent;
+              }
+              
+              // Try to get from window variables
+              if (window._currentUserID) return window._currentUserID.toString();
+              if (window._userIdentifier) return window._userIdentifier.toString();
+              
+              return null;
+            }
+          });
+          
+          if (results && results[0] && results[0].result) {
+            userIdentifier = results[0].result;
+            debugLog('✅ Retrieved userIdentifier from active FLUF tab:', userIdentifier);
+            
+            // Store it for future use
+            chrome.storage.local.set({ vinted_last_user_identifier: userIdentifier });
+          }
+        } catch (scriptError) {
+          debugLog('⚠️ Could not read userIdentifier from tab (may not have permission):', scriptError.message);
+        }
+      }
+    } catch (tabError) {
+      debugLog('⚠️ Error querying tabs for userIdentifier:', tabError);
+    }
+  }
+  
+  if (!userIdentifier) {
+    debugLog('⚠️ WARNING: No userIdentifier available for scheduled check - auth may not be associated with correct user');
+  }
+  
   // Use stored domain preference for scheduled checks
-  return await getVintedTokensViaContentScript();
+  return await getVintedTokensViaContentScript(userIdentifier || '');
 }
 
 // Initialize debug mode when extension starts
@@ -390,6 +452,10 @@ let globalVintedExtractionInProgress = false;
 let lastVintedAuthAttempt = 0;
 const VINTED_AUTH_DEBOUNCE_MS = 3000; // 3 seconds
 
+// Track active authentication requests to prevent duplicates
+let activeAuthRequests = new Map(); // key: `${channel}_${userIdentifier}`, value: { timestamp, promise }
+const AUTH_REQUEST_TIMEOUT_MS = 120000; // 2 minutes - max time for an auth request
+
 let vintedListingQueue = [];
 let vintedListingProcessing = false;
 let vintedListingProcessingTimeout = null;
@@ -523,7 +589,7 @@ let debugModeCheckPromise = null;
 
 // Rate limiting for Vinted cookie extraction
 let lastVintedDebuggerCheck = 0;
-const VINTED_DEBUGGER_COOLDOWN = 15 * 60 * 1000; // 15 minutes in milliseconds
+const VINTED_DEBUGGER_COOLDOWN = 10 * 60 * 1000; // 15 minutes in milliseconds
 
 // Debug logging function
 function debugLog(...args) {
@@ -1632,23 +1698,82 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     debugLog("Request data:", request);
 
     const channel = request.channel || 'depop'; // Default to depop for backward compatibility
+    const userIdentifier = request.userIdentifier || '';
+    
+    // Create a unique key for this auth request
+    const requestKey = `${channel}_${userIdentifier}`;
+    
+    // Clean up stale requests (older than timeout)
+    const now = Date.now();
+    for (const [key, value] of activeAuthRequests.entries()) {
+      if (now - value.timestamp > AUTH_REQUEST_TIMEOUT_MS) {
+        debugLog(`🧹 Cleaning up stale auth request: ${key}`);
+        activeAuthRequests.delete(key);
+      }
+    }
+    
+    // Check if there's already an active request for this channel/user
+    // Use a more aggressive debounce for very recent requests (within 1 second)
+    const RECENT_REQUEST_DEBOUNCE_MS = 1000; // 1 second
+    
+    if (activeAuthRequests.has(requestKey)) {
+      const existingRequest = activeAuthRequests.get(requestKey);
+      const timeSinceRequest = now - existingRequest.timestamp;
+      
+      if (timeSinceRequest < AUTH_REQUEST_TIMEOUT_MS) {
+        // For very recent requests (within 1 second), always return existing
+        // For older requests, still return existing but log it
+        if (timeSinceRequest < RECENT_REQUEST_DEBOUNCE_MS) {
+          debugLog(`🚫 DUPLICATE PREVENTION: Very recent ${channel} auth request (${Math.round(timeSinceRequest)}ms ago) - returning existing result`);
+        } else {
+          debugLog(`⚠️ DUPLICATE PREVENTION: Active ${channel} auth request already in progress for user ${userIdentifier} (${Math.round(timeSinceRequest / 1000)}s ago)`);
+        }
+        debugLog(`⚠️ Returning existing promise instead of creating duplicate request`);
+        
+        // Return the existing promise's result
+        existingRequest.promise.then(result => {
+          debugLog(`🔄 Duplicate request resolved with existing result:`, result);
+          sendResponse(result);
+        }).catch(error => {
+          debugLog(`🔄 Duplicate request failed with existing error:`, error);
+          const errorResponse = typeof error === 'object' && error !== null && !Array.isArray(error)
+            ? error
+            : {
+                success: false,
+                error: error?.message || String(error) || 'Unknown error',
+                channel: channel
+              };
+          sendResponse(errorResponse);
+        });
+        
+        return true; // Keep message channel open
+      } else {
+        // Stale request, remove it
+        debugLog(`🧹 Removing stale request: ${requestKey}`);
+        activeAuthRequests.delete(requestKey);
+      }
+    }
     
     debugLog(`🔐 CHANNEL-SPECIFIC AUTH: Processing ${channel.toUpperCase()} authentication request`);
     debugLog(`🔐 CHANNEL ISOLATION: Will ONLY authenticate ${channel.toUpperCase()}, not other platforms`);
 
+    // Create a promise for this auth request
+    let authPromise;
+    
     // Route to specific platform based on channel
     if (channel === 'vinted') {
       const baseUrl = request.base_url; // Don't provide default here, let the function handle it
 
       debugLog('🟣 Processing Vinted auth request with baseUrl:', baseUrl);
       
-      // Record frontend refresh timestamp for alarm coordination
+      // Record frontend refresh timestamp and userIdentifier for alarm coordination
       chrome.storage.local.set({ 
-        vinted_last_frontend_refresh: Date.now() 
+        vinted_last_frontend_refresh: Date.now(),
+        vinted_last_user_identifier: request.userIdentifier || null
       });
-      debugLog('🔔 VINTED COORDINATION: Recorded frontend refresh timestamp');
+      debugLog('🔔 VINTED COORDINATION: Recorded frontend refresh timestamp and userIdentifier:', request.userIdentifier);
       
-      getVintedTokensViaContentScript(request.userIdentifier, baseUrl, true).then(result => {
+      authPromise = getVintedTokensViaContentScript(request.userIdentifier, baseUrl, true).then(result => {
         debugLog('🟣 Vinted auth result:', result);
         const response = {
           success: result?.success || false,
@@ -1656,8 +1781,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           message: result?.success ? result?.message : null,
           channel: 'vinted'
         };
-        debugLog('🟣 Sending Vinted response to content script:', response);
-        sendResponse(response);
+        
+        // Clean up the active request on success
+        activeAuthRequests.delete(requestKey);
+        
+        return response;
       }).catch(error => {
         console.error('🟣 Vinted auth error:', error);
         const errorResponse = {
@@ -1665,14 +1793,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           error: error.message || 'Unknown error',
           channel: 'vinted'
         };
-        debugLog('🟣 Sending Vinted error response:', errorResponse);
-        sendResponse(errorResponse);
+        
+        // Clean up the active request on error
+        activeAuthRequests.delete(requestKey);
+        
+        throw errorResponse;
       });
     } else {
       // Default to Depop
       debugLog('🟡 Processing Depop auth request');
       debugLog('🟡 DEPOP ONLY: Will authenticate ONLY Depop, not Vinted or other platforms');
-      getDepopTokensViaContentScript(request.userIdentifier).then(result => {
+      
+      authPromise = getDepopTokensViaContentScript(request.userIdentifier).then(result => {
         debugLog('🟡 Depop auth result:', result);
         const response = {
           success: result?.success || false,
@@ -1680,8 +1812,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           message: result?.success ? result?.message : null,
           channel: 'depop'
         };
-        debugLog('🟡 Sending Depop response to content script:', response);
-        sendResponse(response);
+        
+        // Clean up the active request on success
+        activeAuthRequests.delete(requestKey);
+        
+        return response;
       }).catch(error => {
         console.error('🟡 Depop auth error:', error);
         const errorResponse = {
@@ -1689,10 +1824,38 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           error: error.message || 'Unknown error',
           channel: 'depop'
         };
-        debugLog('🟡 Sending Depop error response:', errorResponse);
-        sendResponse(errorResponse);
+        
+        // Clean up the active request on error
+        activeAuthRequests.delete(requestKey);
+        
+        throw errorResponse;
       });
     }
+    
+    // Store the active request
+    activeAuthRequests.set(requestKey, {
+      timestamp: now,
+      promise: authPromise
+    });
+    
+    debugLog(`📝 Stored active auth request: ${requestKey} (${activeAuthRequests.size} total active requests)`);
+    
+    // Handle the promise
+    authPromise.then(result => {
+      debugLog(`✅ Auth request completed: ${requestKey}`);
+      sendResponse(result);
+    }).catch(error => {
+      debugLog(`❌ Auth request failed: ${requestKey}`, error);
+      // Ensure error is in the correct format
+      const errorResponse = typeof error === 'object' && error !== null && !Array.isArray(error)
+        ? error
+        : {
+            success: false,
+            error: error?.message || String(error) || 'Unknown error',
+            channel: channel
+          };
+      sendResponse(errorResponse);
+    });
 
     return true; // ✅ ✅ ✅ ***CRUCIAL: TELL CHROME YOU WILL SEND RESPONSE LATER***
   }
