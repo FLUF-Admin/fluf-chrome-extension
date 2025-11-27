@@ -1,9 +1,414 @@
-const DEV_MODE = false;
+const DEV_MODE = true;
 
 // Endpoints - send to localhost, local development, and production
-const ENDPOINTS = DEV_MODE ? ["http://localhost:10007/wp-json/fc/circular-auth/v1/token", "https://fluf.local/wp-json/fc/circular-auth/v1/token"] : [
+const ENDPOINTS = DEV_MODE ? ["http://localhost:10008/wp-json/fc/circular-auth/v1/token", "https://fluf.local/wp-json/fc/circular-auth/v1/token"] : [
   "https://fluf.io/wp-json/fc/circular-auth/v1/token"
 ];
+
+// ============================================================================
+// AGENT CORE - Inline agent functionality for Chrome Extension
+// ============================================================================
+
+// Agent state
+let agentState = {
+  active: false,
+  currentJob: null,
+  executionQueue: [],
+  safetyPaused: false,
+  rateLimits: new Map(),
+  domainWhitelist: new Set()
+};
+
+// Rate limit configuration (actions per minute)
+const AGENT_RATE_LIMITS = {
+  'vinted.list-product': 10,
+  'vinted.login': 5,
+  'vinted.*': 30,
+  'depop.*': 30,
+  '*': 100
+};
+
+// Initialize domain whitelist
+const INITIAL_WHITELIST = [
+  'vinted.co.uk', 'vinted.com', 'vinted.fr', 'vinted.de', 'vinted.nl',
+  'vinted.at', 'vinted.be', 'vinted.cz', 'vinted.dk', 'vinted.es',
+  'vinted.fi', 'vinted.gr', 'vinted.hr', 'vinted.hu', 'vinted.ie',
+  'vinted.it', 'vinted.lt', 'vinted.lu', 'vinted.pl', 'vinted.pt',
+  'vinted.ro', 'vinted.se', 'vinted.sk',
+  'depop.com',
+  'fluf.io', 'fluf.local', 'localhost'
+];
+
+INITIAL_WHITELIST.forEach(domain => agentState.domainWhitelist.add(domain));
+
+// Skill Registry
+const skillRegistry = {
+  skills: new Map(),
+  
+  register(skill) {
+    this.skills.set(skill.id, skill);
+    debugLog(`✅ Registered skill: ${skill.id}`);
+  },
+  
+  get(id) {
+    return this.skills.get(id);
+  },
+  
+  getAll() {
+    return Array.from(this.skills.values());
+  },
+  
+  search(query) {
+    const lowerQuery = query.toLowerCase();
+    return this.getAll().filter(skill => 
+      skill.id.toLowerCase().includes(lowerQuery) ||
+      skill.name.toLowerCase().includes(lowerQuery) ||
+      skill.description.toLowerCase().includes(lowerQuery)
+    );
+  }
+};
+
+// Browser Control API (using Chrome Extension APIs)
+const browserControl = {
+  async navigateTo(url, tabId = null) {
+    debugLog(`🧭 Navigating to: ${url}`);
+    
+    if (!this.checkDomain(url)) {
+      throw new Error(`Domain not whitelisted: ${url}`);
+    }
+    
+    if (tabId) {
+      await chrome.tabs.update(tabId, { url });
+      await this.waitForTabComplete(tabId);
+    } else {
+      const tab = await chrome.tabs.create({ url, active: false });
+      await this.waitForTabComplete(tab.id);
+      return tab.id;
+    }
+  },
+  
+  async getCurrentURL(tabId) {
+    const tab = await chrome.tabs.get(tabId);
+    return tab.url;
+  },
+  
+  async waitForTabComplete(tabId, timeout = 30000) {
+    return new Promise((resolve, reject) => {
+      const listener = (updatedTabId, changeInfo) => {
+        if (updatedTabId === tabId && changeInfo.status === 'complete') {
+          chrome.tabs.onUpdated.removeListener(listener);
+          resolve();
+        }
+      };
+      
+      chrome.tabs.onUpdated.addListener(listener);
+      
+      setTimeout(() => {
+        chrome.tabs.onUpdated.removeListener(listener);
+        reject(new Error('Tab load timeout'));
+      }, timeout);
+    });
+  },
+  
+  async click(selector, tabId) {
+    debugLog(`🖱️ Clicking: ${selector}`);
+    
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (sel) => {
+        const element = document.querySelector(sel);
+        if (element) {
+          element.click();
+          return { success: true };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+      args: [selector]
+    });
+    
+    if (!results[0].result.success) {
+      throw new Error(`Failed to click: ${selector}`);
+    }
+  },
+  
+  async type(selector, text, tabId) {
+    debugLog(`⌨️ Typing into: ${selector}`);
+    
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (sel, txt) => {
+        const element = document.querySelector(sel);
+        if (element) {
+          element.focus();
+          element.value = txt;
+          element.dispatchEvent(new Event('input', { bubbles: true }));
+          element.dispatchEvent(new Event('change', { bubbles: true }));
+          return { success: true };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+      args: [selector, text]
+    });
+  },
+  
+  async getText(selector, tabId) {
+    debugLog(`📖 Getting text from: ${selector}`);
+    
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (sel) => {
+        const element = document.querySelector(sel);
+        return element ? element.textContent.trim() : null;
+      },
+      args: [selector]
+    });
+    
+    return results[0].result;
+  },
+  
+  async waitForSelector(selector, tabId, timeout = 10000) {
+    debugLog(`⏳ Waiting for selector: ${selector}`);
+    
+    const startTime = Date.now();
+    
+    while (Date.now() - startTime < timeout) {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (sel) => {
+          return document.querySelector(sel) !== null;
+        },
+        args: [selector]
+      });
+      
+      if (results[0].result) {
+        return true;
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    
+    throw new Error(`Selector not found: ${selector}`);
+  },
+  
+  async evaluate(code, tabId) {
+    debugLog(`💻 Evaluating code`);
+    
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (codeStr) => {
+        return eval(codeStr);
+      },
+      args: [code]
+    });
+    
+    return results[0].result;
+  },
+  
+  checkDomain(url) {
+    try {
+      const urlObj = new URL(url);
+      const hostname = urlObj.hostname.replace(/^www\./, '');
+      
+      for (const allowedDomain of agentState.domainWhitelist) {
+        if (hostname === allowedDomain || hostname.endsWith('.' + allowedDomain)) {
+          return true;
+        }
+      }
+      
+      return false;
+    } catch (e) {
+      return false;
+    }
+  },
+  
+  async checkRateLimit(skillId) {
+    const now = Date.now();
+    const oneMinuteAgo = now - 60000;
+    
+    const skillLimit = AGENT_RATE_LIMITS[skillId] || AGENT_RATE_LIMITS[`${skillId.split('.')[0]}.*`] || AGENT_RATE_LIMITS['*'];
+    
+    if (!agentState.rateLimits.has(skillId)) {
+      agentState.rateLimits.set(skillId, []);
+    }
+    
+    const timestamps = agentState.rateLimits.get(skillId);
+    const recentActions = timestamps.filter(ts => ts > oneMinuteAgo);
+    
+    if (recentActions.length >= skillLimit) {
+      throw new Error(`Rate limit exceeded for ${skillId}: ${recentActions.length}/${skillLimit} per minute`);
+    }
+    
+    recentActions.push(now);
+    agentState.rateLimits.set(skillId, recentActions);
+    
+    return true;
+  }
+};
+
+// Register generic skills
+const genericSkills = {
+  navigate: {
+    id: 'generic.navigate',
+    name: 'Navigate to URL',
+    description: 'Navigate browser to a specific URL',
+    category: 'navigation',
+    inputs: [
+      { name: 'url', type: 'string', required: true },
+      { name: 'tabId', type: 'number', required: false }
+    ],
+    async execute(context, browser) {
+      const { url, tabId } = context.inputs;
+      const resultTabId = await browser.navigateTo(url, tabId);
+      return { success: true, tabId: resultTabId || tabId };
+    }
+  },
+  
+  click: {
+    id: 'generic.click',
+    name: 'Click Element',
+    description: 'Click an element by CSS selector',
+    category: 'interaction',
+    inputs: [
+      { name: 'selector', type: 'string', required: true },
+      { name: 'tabId', type: 'number', required: true }
+    ],
+    async execute(context, browser) {
+      const { selector, tabId } = context.inputs;
+      await browser.click(selector, tabId);
+      return { success: true };
+    }
+  },
+  
+  type: {
+    id: 'generic.type',
+    name: 'Type Text',
+    description: 'Type text into an input field',
+    category: 'interaction',
+    inputs: [
+      { name: 'selector', type: 'string', required: true },
+      { name: 'text', type: 'string', required: true },
+      { name: 'tabId', type: 'number', required: true }
+    ],
+    async execute(context, browser) {
+      const { selector, text, tabId } = context.inputs;
+      await browser.type(selector, text, tabId);
+      return { success: true };
+    }
+  },
+  
+  waitForSelector: {
+    id: 'generic.waitForSelector',
+    name: 'Wait for Element',
+    description: 'Wait for an element to appear',
+    category: 'interaction',
+    inputs: [
+      { name: 'selector', type: 'string', required: true },
+      { name: 'tabId', type: 'number', required: true },
+      { name: 'timeout', type: 'number', required: false }
+    ],
+    async execute(context, browser) {
+      const { selector, tabId, timeout = 10000 } = context.inputs;
+      await browser.waitForSelector(selector, tabId, timeout);
+      return { success: true };
+    }
+  }
+};
+
+Object.values(genericSkills).forEach(skill => skillRegistry.register(skill));
+
+// Agent Engine
+const agentEngine = {
+  async executeSkill(skillId, context) {
+    debugLog(`🚀 Executing skill: ${skillId}`);
+    
+    if (agentState.safetyPaused) {
+      throw new Error('Agent is paused');
+    }
+    
+    const skill = skillRegistry.get(skillId);
+    if (!skill) {
+      throw new Error(`Skill not found: ${skillId}`);
+    }
+    
+    await browserControl.checkRateLimit(skillId);
+    
+    if (context.inputs?.url && !browserControl.checkDomain(context.inputs.url)) {
+      throw new Error(`Domain not whitelisted: ${context.inputs.url}`);
+    }
+    
+    try {
+      const result = await skill.execute(context, browserControl);
+      debugLog(`✅ Skill executed successfully: ${skillId}`);
+      return result;
+    } catch (error) {
+      debugLog(`❌ Skill execution failed: ${skillId}`, error);
+      throw error;
+    }
+  },
+  
+  async executeJob(job) {
+    debugLog(`📋 Executing job: ${job.id}`);
+    
+    agentState.currentJob = job;
+    agentState.active = true;
+    
+    const results = [];
+    
+    try {
+      for (const task of job.tasks) {
+        debugLog(`📝 Executing task: ${task.id} (${task.skillId})`);
+        
+        try {
+          const result = await this.executeSkill(task.skillId, task.context);
+          results.push({ taskId: task.id, success: true, result });
+        } catch (error) {
+          results.push({ taskId: task.id, success: false, error: error.message });
+          
+          if (!job.continueOnError) {
+            throw error;
+          }
+        }
+      }
+      
+      debugLog(`✅ Job completed: ${job.id}`);
+      return { success: true, results };
+    } catch (error) {
+      debugLog(`❌ Job failed: ${job.id}`, error);
+      return { success: false, error: error.message, results };
+    } finally {
+      agentState.currentJob = null;
+      agentState.active = false;
+    }
+  },
+  
+  pause() {
+    agentState.safetyPaused = true;
+    debugLog('⏸️ Agent paused');
+  },
+  
+  resume() {
+    agentState.safetyPaused = false;
+    debugLog('▶️ Agent resumed');
+  },
+  
+  addDomain(domain) {
+    agentState.domainWhitelist.add(domain);
+    debugLog(`✅ Added domain to whitelist: ${domain}`);
+  },
+  
+  getStatus() {
+    return {
+      active: agentState.active,
+      currentJob: agentState.currentJob?.id || null,
+      paused: agentState.safetyPaused,
+      skillsCount: skillRegistry.getAll().length,
+      whitelistedDomains: Array.from(agentState.domainWhitelist)
+    };
+  }
+};
+
+// Initialize agent on extension load
+debugLog('🤖 Agent core initialized');
 
 
 // Vinted domain mapping
@@ -827,27 +1232,57 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
     }
     
     const targetDomain = new URL(baseUrl).hostname;
-    let vintedCookies;
+    let vintedCookies = [];
     
+    // Get cookies from the target domain (e.g. www.vinted.co.uk)
     try {
-      vintedCookies = await chrome.cookies.getAll({
+      let domainCookies = await chrome.cookies.getAll({
         domain: targetDomain
       });
+      vintedCookies.push(...domainCookies);
+      debugLog(`📊 VINTED: Found ${domainCookies.length} cookies for domain ${targetDomain}`);
     } catch (cookieError) {
-      debugLog('❌ VINTED: Error accessing cookies:', cookieError);
-      throw new Error('Failed to access cookies. Extension may need cookies permission: ' + cookieError.message);
+      debugLog('❌ VINTED: Error accessing cookies for target domain:', cookieError);
     }
     
-    debugLog(`📊 VINTED: Found ${vintedCookies.length} cookies for domain ${targetDomain}`);
+    // CRITICAL: Also get cookies from parent domain (e.g. .vinted.co.uk)
+    // access_token_web is often set on the parent domain with a leading dot
+    if (targetDomain.startsWith('www.')) {
+      const parentDomain = targetDomain.replace('www.', '');
+      try {
+        let parentCookies = await chrome.cookies.getAll({
+          domain: parentDomain
+        });
+        vintedCookies.push(...parentCookies);
+        debugLog(`📊 VINTED: Found ${parentCookies.length} cookies for parent domain ${parentDomain}`);
+        
+        // Also try with leading dot (some browsers store it this way)
+        let dotParentCookies = await chrome.cookies.getAll({
+          domain: '.' + parentDomain
+        });
+        vintedCookies.push(...dotParentCookies);
+        debugLog(`📊 VINTED: Found ${dotParentCookies.length} cookies for .${parentDomain}`);
+      } catch (parentError) {
+        debugLog('⚠️ VINTED: Error accessing parent domain cookies:', parentError);
+      }
+    }
     
-    // Also try getting cookies from subdomain (www.)
+    // Also try getting cookies from www subdomain if we started with non-www
     if (!targetDomain.startsWith('www.')) {
       const wwwDomain = 'www.' + targetDomain;
-      const wwwCookies = await chrome.cookies.getAll({
-        domain: wwwDomain
-      });
-      vintedCookies.push(...wwwCookies);
-      debugLog(`📊 VINTED: Found ${wwwCookies.length} additional cookies for www.${targetDomain}`);
+      try {
+        let wwwCookies = await chrome.cookies.getAll({
+          domain: wwwDomain
+        });
+        vintedCookies.push(...wwwCookies);
+        debugLog(`📊 VINTED: Found ${wwwCookies.length} additional cookies for ${wwwDomain}`);
+      } catch (wwwError) {
+        debugLog('⚠️ VINTED: Error accessing www subdomain cookies:', wwwError);
+      }
+    }
+    
+    if (vintedCookies.length === 0) {
+      throw new Error('Failed to access cookies. Extension may need cookies permission.');
     }
     
     // Remove duplicates based on cookie name and domain
@@ -952,7 +1387,7 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
       debugLog('❌ VINTED: access_token_web not found after all attempts - user not logged in');
       return {
         success: false,
-        message: 'access_token_web cookie not found. Please log into Vinted.',
+        message: 'Please ensure you are logged into Vinted.',
         cookies: uniqueCookies.map(c => c.name),
         cookieCount: uniqueCookies.length,
         tabKeptOpen: createdNewTab && shouldKeepTabOpen
@@ -1859,6 +2294,89 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     return true; // ✅ ✅ ✅ ***CRUCIAL: TELL CHROME YOU WILL SEND RESPONSE LATER***
   }
+  
+  // Agent Control Messages
+  else if (request.action === "AGENT_EXECUTE_SKILL") {
+    debugLog('🤖 AGENT: Execute skill request:', request.skillId);
+    
+    agentEngine.executeSkill(request.skillId, request.context || {})
+      .then(result => {
+        sendResponse({ success: true, result });
+      })
+      .catch(error => {
+        sendResponse({ success: false, error: error.message });
+      });
+    
+    return true; // Keep message channel open
+  }
+  
+  else if (request.action === "AGENT_EXECUTE_JOB") {
+    debugLog('🤖 AGENT: Execute job request:', request.job?.id);
+    
+    agentEngine.executeJob(request.job)
+      .then(result => {
+        sendResponse({ success: true, ...result });
+      })
+      .catch(error => {
+        sendResponse({ success: false, error: error.message });
+      });
+    
+    return true; // Keep message channel open
+  }
+  
+  else if (request.action === "AGENT_GET_SKILLS") {
+    debugLog('🤖 AGENT: Get skills request');
+    
+    const query = request.query || '';
+    const skills = query 
+      ? skillRegistry.search(query)
+      : skillRegistry.getAll();
+    
+    sendResponse({ 
+      success: true, 
+      skills: skills.map(s => ({
+        id: s.id,
+        name: s.name,
+        description: s.description,
+        category: s.category,
+        requiresApproval: s.requiresApproval || false,
+        inputs: s.inputs || []
+      }))
+    });
+    return false;
+  }
+  
+  else if (request.action === "AGENT_GET_STATUS") {
+    debugLog('🤖 AGENT: Get status request');
+    
+    const status = agentEngine.getStatus();
+    sendResponse({ success: true, status });
+    return false;
+  }
+  
+  else if (request.action === "AGENT_PAUSE") {
+    debugLog('🤖 AGENT: Pause request');
+    
+    agentEngine.pause();
+    sendResponse({ success: true });
+    return false;
+  }
+  
+  else if (request.action === "AGENT_RESUME") {
+    debugLog('🤖 AGENT: Resume request');
+    
+    agentEngine.resume();
+    sendResponse({ success: true });
+    return false;
+  }
+  
+  else if (request.action === "AGENT_ADD_DOMAIN") {
+    debugLog('🤖 AGENT: Add domain request:', request.domain);
+    
+    agentEngine.addDomain(request.domain);
+    sendResponse({ success: true });
+    return false;
+  }
 });
 
 // Function to handle Vinted listing creation
@@ -1960,7 +2478,7 @@ async function handleVintedListingCreation(request) {
     debugLog('🔍 access_token_web check:', hasAccessTokenWeb ? '✅ PRESENT' : '❌ MISSING');
 
     if (!hasAccessTokenWeb) {
-      throw new Error('Missing access_token_web cookie - Vinted session expired');
+      throw new Error('Please ensure you are logged into Vinted.');
     }
 
     // Build the complete headers for the request using dynamic domain
@@ -2158,7 +2676,7 @@ async function sendVintedCallbackToWordPress(data) {
   debugLog('📤 Sending callback to FLUF:', data);
 
   const endpoints = [
-    'http://localhost:10007/wp-json/fc/listings/v1/vinted-extension-callback',
+    'http://localhost:10008/wp-json/fc/listings/v1/vinted-extension-callback',
     'https://fluf.io/wp-json/fc/listings/v1/vinted-extension-callback'
   ];
 
