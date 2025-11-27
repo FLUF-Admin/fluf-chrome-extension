@@ -1,4 +1,7 @@
-const DEV_MODE = true;
+const DEV_MODE = false;
+
+// Debug mode - must be declared early as debugLog uses it
+let debugModeEnabled = DEV_MODE ? true : false;
 
 // Endpoints - send to localhost, local development, and production
 const ENDPOINTS = DEV_MODE ? ["http://localhost:10008/wp-json/fc/circular-auth/v1/token", "https://fluf.local/wp-json/fc/circular-auth/v1/token"] : [
@@ -988,7 +991,6 @@ async function closeDuplicateVintedTabs(keepTabId = null) {
 }
 
 // Debug mode management
-let debugModeEnabled = DEV_MODE ? true : false;
 let debugModeChecked = false;
 let debugModeCheckPromise = null;
 
