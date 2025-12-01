@@ -1348,7 +1348,18 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
     const targetDomain = new URL(baseUrl).hostname;
     let vintedCookies = [];
     
-    // Get cookies from the target domain (e.g. www.vinted.co.uk)
+    // METHOD 1: Query by URL (most reliable - gets all cookies that would be sent to this URL)
+    try {
+      let urlCookies = await chrome.cookies.getAll({
+        url: baseUrl
+      });
+      vintedCookies.push(...urlCookies);
+      debugLog(`📊 VINTED: Found ${urlCookies.length} cookies by URL ${baseUrl}`);
+    } catch (urlError) {
+      debugLog('⚠️ VINTED: Error accessing cookies by URL:', urlError);
+    }
+    
+    // METHOD 2: Query by domain (backup)
     try {
       let domainCookies = await chrome.cookies.getAll({
         domain: targetDomain
@@ -1359,8 +1370,18 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
       debugLog('❌ VINTED: Error accessing cookies for target domain:', cookieError);
     }
     
-    // CRITICAL: Also get cookies from parent domain (e.g. .vinted.co.uk)
-    // access_token_web is often set on the parent domain with a leading dot
+    // METHOD 3: Query with .www prefix (some sites use this)
+    try {
+      let dotWwwCookies = await chrome.cookies.getAll({
+        domain: '.' + targetDomain
+      });
+      vintedCookies.push(...dotWwwCookies);
+      debugLog(`📊 VINTED: Found ${dotWwwCookies.length} cookies for .${targetDomain}`);
+    } catch (dotWwwError) {
+      debugLog('⚠️ VINTED: Error accessing .www domain cookies:', dotWwwError);
+    }
+    
+    // METHOD 4: Parent domain without www (e.g. .vinted.co.uk)
     if (targetDomain.startsWith('www.')) {
       const parentDomain = targetDomain.replace('www.', '');
       try {
@@ -1370,7 +1391,7 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
         vintedCookies.push(...parentCookies);
         debugLog(`📊 VINTED: Found ${parentCookies.length} cookies for parent domain ${parentDomain}`);
         
-        // Also try with leading dot (some browsers store it this way)
+        // Also try with leading dot
         let dotParentCookies = await chrome.cookies.getAll({
           domain: '.' + parentDomain
         });
@@ -1381,7 +1402,7 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
       }
     }
     
-    // Also try getting cookies from www subdomain if we started with non-www
+    // METHOD 5: www subdomain if started with non-www
     if (!targetDomain.startsWith('www.')) {
       const wwwDomain = 'www.' + targetDomain;
       try {
