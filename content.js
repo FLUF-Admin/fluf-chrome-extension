@@ -468,6 +468,36 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage)
             }, '*');
             sendResponse({success: true});
         }
+        
+        // Forward extension status updates to the page for the Extension Status Panel
+        if (request.type === 'FLUF_EXTENSION_STATUS_UPDATE') {
+            console.log('📊 Extension status update:', request);
+            window.postMessage({
+                type: 'FLUF_EXTENSION_STATUS_UPDATE',
+                data: request.data
+            }, '*');
+            sendResponse({success: true});
+        }
+        
+        // Forward listing progress updates
+        if (request.type === 'VINTED_LISTING_PROGRESS') {
+            console.log('📦 Vinted listing progress:', request);
+            window.postMessage({
+                type: 'VINTED_LISTING_PROGRESS',
+                data: request.data
+            }, '*');
+            sendResponse({success: true});
+        }
+        
+        // Forward queue status updates
+        if (request.type === 'VINTED_QUEUE_UPDATE') {
+            console.log('📋 Vinted queue update:', request);
+            window.postMessage({
+                type: 'VINTED_QUEUE_UPDATE',
+                data: request.data
+            }, '*');
+            sendResponse({success: true});
+        }
     });
 }
 

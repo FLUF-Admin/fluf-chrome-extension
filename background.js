@@ -881,6 +881,15 @@ function enqueueVintedListingRequest(request, sendResponse) {
     source: request.source || 'manual'
   }, request.uid);
   
+  // Broadcast to frontend Extension Status Panel
+  broadcastToFlufTabs('FLUF_EXTENSION_STATUS_UPDATE', {
+    event: 'listing_queued',
+    vid: request.vid,
+    fid: request.fid,
+    queue_size: vintedListingQueue.length,
+    source: request.source || 'manual'
+  });
+  
   processVintedListingQueue();
 }
 
@@ -1020,6 +1029,29 @@ const VINTED_DEBUGGER_COOLDOWN = 10 * 60 * 1000; // 15 minutes in milliseconds
 function debugLog(...args) {
   if (DEV_MODE || debugModeEnabled) {
     console.log(...args);
+  }
+}
+
+// ============================================================================
+// FRONTEND STATUS BROADCASTING - Send status updates to FLUF tabs
+// ============================================================================
+
+// Broadcast status update to all FLUF Connect tabs
+async function broadcastToFlufTabs(type, data) {
+  try {
+    const tabs = await chrome.tabs.query({
+      url: ['*://fluf.io/*', '*://fluf.local/*', '*://localhost/*']
+    });
+    
+    for (const tab of tabs) {
+      try {
+        await chrome.tabs.sendMessage(tab.id, { type, data });
+      } catch (error) {
+        // Tab might not have content script loaded, ignore
+      }
+    }
+  } catch (error) {
+    debugLog('Error broadcasting to FLUF tabs:', error);
   }
 }
 
@@ -2602,6 +2634,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 async function handleVintedListingCreation(request) {
   debugLog('🚀 VINTED LISTING: Starting listing creation process');
   debugLog('📋 VINTED LISTING: Request data:', { fid: request.fid, vid: request.vid, uid: request.uid });
+  
+  // Broadcast listing started to frontend
+  broadcastToFlufTabs('VINTED_LISTING_PROGRESS', {
+    event: 'listing_started',
+    vid: request.vid,
+    fid: request.fid,
+    message: 'Starting listing creation',
+    status: 'pending'
+  });
 
   const { payload, headers, endpoint, method, fid, vid, uid, cookies, source } = request;
   
@@ -2763,6 +2804,17 @@ async function handleVintedListingCreation(request) {
         item_id: responseData.item.id,
         source: source || 'manual'
       }, uid);
+      
+      // Broadcast success to frontend Extension Status Panel
+      broadcastToFlufTabs('VINTED_LISTING_PROGRESS', {
+        event: 'listing_success',
+        vid: vid,
+        fid: fid,
+        item_id: responseData.item.id,
+        message: 'Listing created successfully',
+        status: 'success',
+        details: `Item ID: ${responseData.item.id}`
+      });
 
       // Send success callback to WordPress
       const callbackResult = await sendVintedCallbackToWordPress({
@@ -2853,6 +2905,16 @@ async function handleVintedListingCreation(request) {
         response_status: response.status,
         source: source || 'manual'
       }, uid);
+      
+      // Broadcast error to frontend Extension Status Panel
+      broadcastToFlufTabs('VINTED_LISTING_PROGRESS', {
+        event: 'listing_error',
+        vid: vid,
+        fid: fid,
+        message: 'Listing failed',
+        status: 'error',
+        details: errorMessage
+      });
 
       if (responseData.code) errorCode = responseData.code;
       
@@ -3177,6 +3239,15 @@ function sendTokenToAPI(extractedData, sourceUrl = "", userIdentifier = "", send
           endpoints_tried: results.length,
           endpoints_succeeded: successfulResults.length
         }, userIdentifier || null);
+        
+        // Broadcast auth success to frontend Extension Status Panel
+        if (channel === 'vinted') {
+          broadcastToFlufTabs('FLUF_EXTENSION_STATUS_UPDATE', {
+            event: 'auth_success',
+            channel: 'vinted',
+            message: 'Vinted authentication successful'
+          });
+        }
 
         if (sendResponse) {
           sendResponse({
