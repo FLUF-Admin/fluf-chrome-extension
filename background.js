@@ -872,6 +872,15 @@ let lastVintedListingTime = 0;
 
 function enqueueVintedListingRequest(request, sendResponse) {
   vintedListingQueue.push({ request, sendResponse });
+  
+  // Send telemetry for queue status
+  sendTelemetry('listing_queued', {
+    fid: request.fid,
+    vid: request.vid,
+    queue_size: vintedListingQueue.length,
+    source: request.source || 'manual'
+  }, request.uid);
+  
   processVintedListingQueue();
 }
 
@@ -922,6 +931,15 @@ async function processVintedListingQueue() {
     sendResponse(result);
   } catch (queueError) {
     console.error('❌ VINTED LISTING: Queue processing error:', queueError);
+    
+    // Send telemetry for queue error
+    sendTelemetry('queue_error', {
+      fid: request.fid,
+      vid: request.vid,
+      error: queueError?.message || 'Queue processing error',
+      queue_size: vintedListingQueue.length
+    }, request.uid);
+    
     sendResponse({
       success: false,
       error: queueError?.message || 'Queue processing error',
@@ -1005,6 +1023,78 @@ function debugLog(...args) {
   }
 }
 
+// ============================================================================
+// TELEMETRY SYSTEM - Send diagnostic events to FLUF backend for debugging
+// ============================================================================
+
+// Telemetry buffer to batch events
+let telemetryBuffer = [];
+let telemetryFlushTimeout = null;
+const TELEMETRY_FLUSH_INTERVAL = 5000; // Flush every 5 seconds
+const TELEMETRY_MAX_BUFFER_SIZE = 20; // Or when buffer reaches 20 events
+
+// Send telemetry event to FLUF backend
+async function sendTelemetry(eventType, data, uid = null) {
+  const event = {
+    event_type: eventType,
+    timestamp: new Date().toISOString(),
+    uid: uid,
+    data: data,
+    extension_version: chrome.runtime.getManifest().version || '1.0.0'
+  };
+  
+  telemetryBuffer.push(event);
+  
+  // Flush immediately for critical events
+  const criticalEvents = [
+    'listing_error', 
+    'auth_error', 
+    'queue_stuck', 
+    'captcha_detected',
+    // Auth flow critical events
+    'vinted_auth_failed',
+    'vinted_auth_error',
+    'vinted_auth_missing_user_identifier',
+    'vinted_cookie_extraction_failed',
+    'vinted_cookie_extraction_error',
+    'vinted_auth_api_failed'
+  ];
+  if (criticalEvents.includes(eventType) || telemetryBuffer.length >= TELEMETRY_MAX_BUFFER_SIZE) {
+    await flushTelemetry();
+  } else if (!telemetryFlushTimeout) {
+    telemetryFlushTimeout = setTimeout(flushTelemetry, TELEMETRY_FLUSH_INTERVAL);
+  }
+}
+
+// Flush telemetry buffer to backend
+async function flushTelemetry() {
+  if (telemetryFlushTimeout) {
+    clearTimeout(telemetryFlushTimeout);
+    telemetryFlushTimeout = null;
+  }
+  
+  if (telemetryBuffer.length === 0) return;
+  
+  const eventsToSend = [...telemetryBuffer];
+  telemetryBuffer = [];
+  
+  try {
+    const response = await fetch('https://fluf.io/wp-json/fc/v1/extension-telemetry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events: eventsToSend })
+    });
+    
+    if (!response.ok) {
+      // Put events back in buffer if failed (up to max size)
+      telemetryBuffer = [...eventsToSend.slice(0, 10), ...telemetryBuffer].slice(0, TELEMETRY_MAX_BUFFER_SIZE);
+    }
+  } catch (error) {
+    // Silently fail - don't break extension for telemetry
+    debugLog('Telemetry flush failed:', error.message);
+  }
+}
+
 // Check debug mode from FLUF web app (simple version)
 async function checkDebugMode() {
   if (DEV_MODE) return;
@@ -1074,6 +1164,13 @@ async function initializeDebugMode() {
 
 // Function to extract Vinted cookies using chrome.cookies.getAll (robust tab management)
 async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/', isManualTrigger = false) {
+  // Send telemetry for cookie extraction start
+  sendTelemetry('vinted_cookie_extraction_started', {
+    base_url: baseUrl,
+    is_manual_trigger: isManualTrigger,
+    target_domain: new URL(baseUrl).hostname
+  }, null);
+  
   // Check rate limiting (unless manually triggered)
   if (!isManualTrigger) {
     const now = Date.now();
@@ -1082,6 +1179,14 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
     if (timeSinceLastCheck < VINTED_DEBUGGER_COOLDOWN) {
       const remainingMinutes = Math.ceil((VINTED_DEBUGGER_COOLDOWN - timeSinceLastCheck) / (60 * 1000));
       debugLog(`⏰ VINTED: Cookie check rate limited. Please wait ${remainingMinutes} more minutes or use manual trigger.`);
+      
+      // Send telemetry for rate limited
+      sendTelemetry('vinted_cookie_extraction_rate_limited', {
+        base_url: baseUrl,
+        remaining_minutes: remainingMinutes,
+        cooldown_ms: VINTED_DEBUGGER_COOLDOWN
+      }, null);
+      
       return {
         success: false,
         message: `Rate limited. Please wait ${remainingMinutes} more minutes or use manual trigger.`,
@@ -1093,6 +1198,13 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
   // Check global coordination to prevent multiple instances across windows (unless manually triggered)
   if (globalVintedExtractionInProgress && !isManualTrigger) {
     debugLog('🔒 VINTED: Global extraction already in progress in another window, skipping...');
+    
+    // Send telemetry for concurrent extraction blocked
+    sendTelemetry('vinted_cookie_extraction_blocked', {
+      base_url: baseUrl,
+      reason: 'global_extraction_in_progress'
+    }, null);
+    
     return {
       success: false,
       message: 'Vinted authentation already in progress in another window',
@@ -1387,6 +1499,18 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
     const finalAccessTokenWeb = uniqueCookies.find(c => c.name === 'access_token_web');
     if (!finalAccessTokenWeb) {
       debugLog('❌ VINTED: access_token_web not found after all attempts - user not logged in');
+      
+      // Send telemetry for missing access_token_web (user not logged in)
+      sendTelemetry('vinted_cookie_extraction_failed', {
+        base_url: baseUrl,
+        target_domain: new URL(baseUrl).hostname,
+        reason: 'access_token_web_missing',
+        cookies_found: uniqueCookies.map(c => c.name),
+        cookie_count: uniqueCookies.length,
+        created_new_tab: createdNewTab,
+        is_manual_trigger: isManualTrigger
+      }, null);
+      
       return {
         success: false,
         message: 'Please ensure you are logged into Vinted.',
@@ -1401,6 +1525,17 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
     
     debugLog('✅ VINTED: Success! Extracted', uniqueCookies.length, 'cookies');
     debugLog('🔑 VINTED access_token_web:', finalAccessTokenWeb.value.substring(0, 20) + '...');
+    
+    // Send telemetry for successful cookie extraction
+    sendTelemetry('vinted_cookie_extraction_success', {
+      base_url: baseUrl,
+      target_domain: new URL(baseUrl).hostname,
+      cookie_count: uniqueCookies.length,
+      has_access_token_web: true,
+      has_anon_id: !!uniqueCookies.find(c => c.name === 'anon_id'),
+      created_new_tab: createdNewTab,
+      is_manual_trigger: isManualTrigger
+    }, null);
     
     // Step 8: Clean up duplicate tabs (keep only the one we used)
     await closeDuplicateVintedTabs(tab.id);
@@ -1420,6 +1555,14 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
     
   } catch (error) {
     debugLog('❌ VINTED: Error:', error);
+    
+    // Send telemetry for cookie extraction error
+    sendTelemetry('vinted_cookie_extraction_error', {
+      base_url: baseUrl,
+      error: error.message,
+      created_new_tab: createdNewTab,
+      is_manual_trigger: isManualTrigger
+    }, null);
     
     // Don't close tabs on error if they were newly created
     if (createdNewTab && shouldKeepTabOpen) {
@@ -1457,6 +1600,14 @@ async function getVintedTokensViaContentScript(userIdentifier = "", baseUrl = nu
   isManualTrigger = (userIdentifier === "manual_trigger") || isManualTrigger;
   debugLog('🟣 VINTED TOKEN EXTRACTION');
   
+  // Send telemetry for auth attempt start
+  sendTelemetry('vinted_auth_started', {
+    user_identifier: userIdentifier || null,
+    base_url: baseUrl,
+    is_manual_trigger: isManualTrigger,
+    trigger_source: isManualTrigger ? 'manual' : 'automatic'
+  }, userIdentifier || null);
+  
   // Debounce rapid duplicate calls (unless manually triggered)
   if (!isManualTrigger) {
     const now = Date.now();
@@ -1464,6 +1615,14 @@ async function getVintedTokensViaContentScript(userIdentifier = "", baseUrl = nu
     
     if (timeSinceLastAttempt < VINTED_AUTH_DEBOUNCE_MS) {
       debugLog(`⏸️ VINTED: Debouncing duplicate auth attempt (${timeSinceLastAttempt}ms since last attempt)`);
+      
+      // Send telemetry for debounced attempt
+      sendTelemetry('vinted_auth_debounced', {
+        user_identifier: userIdentifier || null,
+        time_since_last_attempt_ms: timeSinceLastAttempt,
+        debounce_threshold_ms: VINTED_AUTH_DEBOUNCE_MS
+      }, userIdentifier || null);
+      
       return { 
         success: false, 
         message: 'Duplicate auth attempt debounced', 
@@ -1511,6 +1670,15 @@ async function getVintedTokensViaContentScript(userIdentifier = "", baseUrl = nu
 
     if (!cookieString) {
       debugLog('❌ No Vinted cookies found');
+      
+      // Send telemetry for no cookies found
+      sendTelemetry('vinted_auth_failed', {
+        user_identifier: userIdentifier || null,
+        base_url: baseUrl,
+        reason: 'no_cookies_found',
+        is_manual_trigger: isManualTrigger
+      }, userIdentifier || null);
+      
       return { success: false, message: 'No cookies found' };
     }
 
@@ -1599,6 +1767,16 @@ async function getVintedTokensViaContentScript(userIdentifier = "", baseUrl = nu
       baseUrl: baseUrl
     };
     
+    // Send telemetry for successful cookie extraction (before API call)
+    sendTelemetry('vinted_cookies_extracted', {
+      user_identifier: userIdentifier || null,
+      base_url: baseUrl,
+      has_access_token_web: hasAccessTokenWeb,
+      has_user_id: !!userId,
+      vinted_user_id: userId || null,
+      is_manual_trigger: isManualTrigger
+    }, userIdentifier || null);
+    
     sendTokenToAPI(extractedData, baseUrl, userIdentifier, null);
     console.groupEnd();
 
@@ -1606,6 +1784,15 @@ async function getVintedTokensViaContentScript(userIdentifier = "", baseUrl = nu
 
   } catch (error) {
     console.error('💥 Error extracting Vinted tokens:', error);
+    
+    // Send telemetry for auth error
+    sendTelemetry('vinted_auth_error', {
+      user_identifier: userIdentifier || null,
+      base_url: baseUrl,
+      error: error.message,
+      is_manual_trigger: isManualTrigger
+    }, userIdentifier || null);
+    
     console.groupEnd();
     return { success: false, error: error.message };
   }
@@ -2124,6 +2311,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     debugLog("🚀 VINTED LISTING: Received create listing request from FLUF");
     debugLog("Request data:", request);
 
+    // Send telemetry that we received a listing request
+    sendTelemetry('listing_request_received', {
+      fid: request.fid,
+      vid: request.vid,
+      source: request.source || 'manual',
+      has_payload: !!request.payload,
+      has_cookies: !!(request.cookies || (request.headers && request.headers.cookies))
+    }, request.uid);
+
     enqueueVintedListingRequest(request, (result) => {
       debugLog("✅ VINTED LISTING: Result:", result);
       sendResponse(result);
@@ -2386,7 +2582,7 @@ async function handleVintedListingCreation(request) {
   debugLog('🚀 VINTED LISTING: Starting listing creation process');
   debugLog('📋 VINTED LISTING: Request data:', { fid: request.fid, vid: request.vid, uid: request.uid });
 
-  const { payload, headers, endpoint, method, fid, vid, uid, cookies } = request;
+  const { payload, headers, endpoint, method, fid, vid, uid, cookies, source } = request;
   
   // Extract cookies from headers if provided (backend fallback)
   const backendCookies = cookies || (headers && headers.cookies) || null;
@@ -2480,6 +2676,13 @@ async function handleVintedListingCreation(request) {
     debugLog('🔍 access_token_web check:', hasAccessTokenWeb ? '✅ PRESENT' : '❌ MISSING');
 
     if (!hasAccessTokenWeb) {
+      // Send telemetry for auth failure
+      sendTelemetry('auth_error', {
+        reason: 'access_token_web_missing',
+        has_cookies: !!cookieString,
+        cookie_count: cookieString ? cookieString.split(';').length : 0
+      }, uid);
+      
       throw new Error('Please ensure you are logged into Vinted.');
     }
 
@@ -2532,13 +2735,22 @@ async function handleVintedListingCreation(request) {
     if (response.ok && responseData.item && responseData.item.id) {
       debugLog('✅ VINTED LISTING: Success! Item ID:', responseData.item.id);
 
+      // Send telemetry for successful listing
+      sendTelemetry('listing_success', {
+        fid: fid,
+        vid: vid,
+        item_id: responseData.item.id,
+        source: source || 'manual'
+      }, uid);
+
       // Send success callback to WordPress
       const callbackResult = await sendVintedCallbackToWordPress({
         success: true,
         item_id: responseData.item.id,
         fid: fid,
         vid: vid,
-        uid: uid
+        uid: uid,
+        source: source || 'manual' // Pass source (manual, autolist, relist) for relisting tracking
       });
 
       // DUPLICATE PREVENTION: Log successful listing to prevent duplicates within 24 hours
@@ -2611,6 +2823,16 @@ async function handleVintedListingCreation(request) {
 
       debugLog('🔍 VINTED ERROR: Extracted message:', errorMessage);
 
+      // Send telemetry for listing error
+      sendTelemetry('listing_error', {
+        fid: fid,
+        vid: vid,
+        error: errorMessage,
+        error_code: responseData.code || null,
+        response_status: response.status,
+        source: source || 'manual'
+      }, uid);
+
       if (responseData.code) errorCode = responseData.code;
       
       // Enhance 2FA error message with guidance and link
@@ -2638,6 +2860,7 @@ async function handleVintedListingCreation(request) {
         fid: fid,
         vid: vid,
         uid: uid,
+        source: source || 'manual',
         response: responseData,
         body: payload,
       });
@@ -2661,6 +2884,7 @@ async function handleVintedListingCreation(request) {
       fid: fid,
       vid: vid,
       uid: uid,
+      source: source || 'manual',
       body: payload,
     });
 
@@ -2829,6 +3053,14 @@ function sendTokenToAPI(extractedData, sourceUrl = "", userIdentifier = "", send
     debugLog("✅ Using WordPress user identifier:", userIdentifier);
   } else {
     debugLog("❌ No userIdentifier provided - this will cause issues!");
+    
+    // Send telemetry for missing userIdentifier (critical issue)
+    sendTelemetry('vinted_auth_missing_user_identifier', {
+      channel: channel,
+      base_url: baseUrl || sourceUrl,
+      has_cookies: channel === 'vinted' ? !!fullCookies : false,
+      has_access_token: channel === 'depop' ? !!accessToken : false
+    }, null);
   }
 
   debugLog("Sending data to API:", { ...requestBody, cookies: requestBody.cookies ? '[REDACTED]' : undefined });
@@ -2915,6 +3147,15 @@ function sendTokenToAPI(extractedData, sourceUrl = "", userIdentifier = "", send
 
       if (successfulResults.length > 0) {
         logStatus(`Data sent successfully`, true);
+        
+        // Send telemetry for successful API submission
+        sendTelemetry('vinted_auth_api_success', {
+          channel: channel,
+          user_identifier: userIdentifier || null,
+          base_url: baseUrl || sourceUrl,
+          endpoints_tried: results.length,
+          endpoints_succeeded: successfulResults.length
+        }, userIdentifier || null);
 
         if (sendResponse) {
           sendResponse({
@@ -2925,6 +3166,14 @@ function sendTokenToAPI(extractedData, sourceUrl = "", userIdentifier = "", send
           });
         }
       } else {
+        // Send telemetry for API submission failure
+        sendTelemetry('vinted_auth_api_failed', {
+          channel: channel,
+          user_identifier: userIdentifier || null,
+          base_url: baseUrl || sourceUrl,
+          endpoints_tried: results.length,
+          errors: failedResults.map(r => r.error)
+        }, userIdentifier || null);
 
         if (sendResponse) {
           sendResponse({
