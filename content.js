@@ -6,13 +6,14 @@ console.log('FLUF Chrome Extension content script loaded');
 // Set extension presence indicator on page load
 if (typeof chrome !== 'undefined' && chrome.runtime) {
     document.documentElement.setAttribute('data-fluf-extension', 'installed');
-    document.documentElement.setAttribute('data-fluf-extension-version', '1.0.0');
-    console.log('🔍 FLUF Extension: Set data-fluf-extension attribute');
+    let extVersion = chrome.runtime.getManifest()?.version || 'unknown';
+    document.documentElement.setAttribute('data-fluf-extension-version', extVersion);
+    console.log('🔍 FLUF Extension: Set data-fluf-extension attribute, version:', extVersion);
 }
 
 // Dispatch event to notify that extension is ready
 window.dispatchEvent(new CustomEvent('flufExtensionReady', { 
-    detail: { version: '1.0.0', installed: true } 
+    detail: { version: chrome.runtime?.getManifest()?.version || 'unknown', installed: true } 
 }));
 
 // Listen for messages from the web page
@@ -531,7 +532,7 @@ window.addEventListener('fluf-extension-call', async (event) => {
             break;
             
         case 'checkStatus':
-            response = { installed: true, version: '1.0.0' };
+            response = { installed: true, version: chrome.runtime?.getManifest()?.version || 'unknown' };
             break;
             
         case 'getVintedSession':
