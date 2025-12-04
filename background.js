@@ -642,11 +642,15 @@ async function getVintedTokensDirectly() {
   }
   
   if (!userIdentifier) {
-    debugLog('⚠️ WARNING: No userIdentifier available for scheduled check - auth may not be associated with correct user');
+    debugLog('⚠️ WARNING: No userIdentifier available for scheduled check - skipping API submission');
+    debugLog('⚠️ Tokens will stay fresh in browser but won\'t be sent to backend without user association');
+    // Don't send tokens to backend without knowing which user they belong to
+    // This prevents orphaned auth tokens that can't be associated with any user
+    return { success: false, message: 'No userIdentifier available for scheduled check', skipped: true };
   }
   
   // Use stored domain preference for scheduled checks
-  return await getVintedTokensViaContentScript(userIdentifier || '');
+  return await getVintedTokensViaContentScript(userIdentifier);
 }
 
 // Initialize debug mode when extension starts
