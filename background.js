@@ -2652,7 +2652,7 @@ async function handleVintedListingCreation(request) {
     event: 'listing_started',
     vid: request.vid,
     fid: request.fid,
-    message: 'Starting listing creation',
+    message: 'Preparing your listing...',
     status: 'pending'
   });
 
@@ -2757,6 +2757,16 @@ async function handleVintedListingCreation(request) {
         cookie_count: cookieString ? cookieString.split(';').length : 0
       }, uid);
       
+      // Broadcast auth error to user
+      broadcastToFlufTabs('VINTED_LISTING_PROGRESS', {
+        event: 'listing_error',
+        vid: vid,
+        fid: fid,
+        message: 'Session expired',
+        status: 'error',
+        details: 'Please log into Vinted and click the FLUF extension to refresh your session.'
+      });
+      
       throw new Error('Please ensure you are logged into Vinted.');
     }
 
@@ -2802,6 +2812,15 @@ async function handleVintedListingCreation(request) {
       payload_size: JSON.stringify(payload).length,
       time_since_request: Date.now() - listingStartTime
     }, uid);
+    
+    // Broadcast progress to user
+    broadcastToFlufTabs('VINTED_LISTING_PROGRESS', {
+      event: 'listing_uploading',
+      vid: vid,
+      fid: fid,
+      message: 'Uploading to Vinted...',
+      status: 'pending'
+    });
 
     // Make the actual request to Vinted
     let response;
@@ -2821,6 +2840,17 @@ async function handleVintedListingCreation(request) {
         error_type: fetchError.name,
         time_since_request: Date.now() - listingStartTime
       }, uid);
+      
+      // Broadcast connection error to user
+      broadcastToFlufTabs('VINTED_LISTING_PROGRESS', {
+        event: 'listing_error',
+        vid: vid,
+        fid: fid,
+        message: 'Connection issue',
+        status: 'error',
+        details: 'Could not connect to Vinted. Please check your internet connection and try again.'
+      });
+      
       throw fetchError;
     }
 
@@ -2853,9 +2883,9 @@ async function handleVintedListingCreation(request) {
         vid: vid,
         fid: fid,
         item_id: responseData.item.id,
-        message: 'Listing created successfully',
+        message: 'Listed on Vinted!',
         status: 'success',
-        details: `Item ID: ${responseData.item.id}`
+        details: 'Your item is now live on Vinted'
       });
 
       // Send success callback to WordPress
@@ -2948,33 +2978,50 @@ async function handleVintedListingCreation(request) {
         source: source || 'manual'
       }, uid);
       
-      // Broadcast error to frontend Extension Status Panel
-      broadcastToFlufTabs('VINTED_LISTING_PROGRESS', {
-        event: 'listing_error',
-        vid: vid,
-        fid: fid,
-        message: 'Listing failed',
-        status: 'error',
-        details: errorMessage
-      });
-
       if (responseData.code) errorCode = responseData.code;
+      
+      // Determine user-friendly message based on error type
+      let userFriendlyMessage = 'Could not list item';
+      let userFriendlyDetails = errorMessage;
       
       // Enhance 2FA error message with guidance and link
       if (errorCode === 146 || errorMessage.toLowerCase().includes('two factor') || responseData.message_code === 'entity_2fa_required') {
         const vintedItemsNewUrl = `${originUrl}/items/new`;
+        userFriendlyMessage = 'Verification required';
+        userFriendlyDetails = 'Vinted requires 2FA verification. Please create one listing manually on Vinted to complete verification, then try again.';
         errorMessage = `Required two factor authentication. Please manually create 1 listing at ${vintedItemsNewUrl} to receive and enter your 2FA code. After completing 2FA once, you should be able to list automatically.`;
         debugLog('🔐 2FA Error detected - enhanced with guidance and link:', vintedItemsNewUrl);
       }
-      
-      // Enhance auth-related error messages with link to /items/new
-      if (errorMessage.toLowerCase().includes('auth') || errorMessage.toLowerCase().includes('session') || errorMessage.toLowerCase().includes('token')) {
+      // Enhance auth-related error messages
+      else if (errorMessage.toLowerCase().includes('auth') || errorMessage.toLowerCase().includes('session') || errorMessage.toLowerCase().includes('token')) {
         const vintedItemsNewUrl = `${originUrl}/items/new`;
+        userFriendlyMessage = 'Session expired';
+        userFriendlyDetails = 'Please log into Vinted and click the FLUF extension to refresh your session.';
         if (!errorMessage.includes(vintedItemsNewUrl)) {
           errorMessage = `${errorMessage} Please visit ${vintedItemsNewUrl} to refresh your Vinted session.`;
           debugLog('🔐 Auth Error detected - enhanced with link:', vintedItemsNewUrl);
         }
       }
+      // Picture/image errors
+      else if (errorMessage.toLowerCase().includes('picture') || errorMessage.toLowerCase().includes('image') || errorMessage.toLowerCase().includes('photo')) {
+        userFriendlyMessage = 'Image issue';
+        userFriendlyDetails = 'There was a problem with the listing images. Please check your photos and try again.';
+      }
+      // Rate limiting
+      else if (errorMessage.toLowerCase().includes('rate') || errorMessage.toLowerCase().includes('too many') || errorMessage.toLowerCase().includes('slow down')) {
+        userFriendlyMessage = 'Please wait';
+        userFriendlyDetails = 'Vinted is rate limiting requests. Your listing will retry automatically in a few minutes.';
+      }
+      
+      // Broadcast error to frontend Extension Status Panel
+      broadcastToFlufTabs('VINTED_LISTING_PROGRESS', {
+        event: 'listing_error',
+        vid: vid,
+        fid: fid,
+        message: userFriendlyMessage,
+        status: 'error',
+        details: userFriendlyDetails
+      });
 
       // Send error callback to WordPress
       await sendVintedCallbackToWordPress({
