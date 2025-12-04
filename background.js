@@ -2632,8 +2632,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 // Function to handle Vinted listing creation
 async function handleVintedListingCreation(request) {
+  let listingStartTime = Date.now();
   debugLog('🚀 VINTED LISTING: Starting listing creation process');
   debugLog('📋 VINTED LISTING: Request data:', { fid: request.fid, vid: request.vid, uid: request.uid });
+  
+  // Send telemetry immediately when listing request is received
+  // This helps track if the extension receives requests but fails silently
+  sendTelemetry('listing_request_received', {
+    fid: request.fid,
+    vid: request.vid,
+    source: request.source || 'manual',
+    has_payload: !!request.payload,
+    has_endpoint: !!request.endpoint,
+    has_headers: !!request.headers
+  }, request.uid);
   
   // Broadcast listing started to frontend
   broadcastToFlufTabs('VINTED_LISTING_PROGRESS', {
@@ -2782,15 +2794,45 @@ async function handleVintedListingCreation(request) {
     debugLog('📡 VINTED LISTING: Making request to:', endpoint);
     debugLog('📦 VINTED LISTING: Payload size:', JSON.stringify(payload).length, 'chars');
 
+    // Send telemetry before API call - helps identify if we fail during the fetch
+    sendTelemetry('listing_api_call_started', {
+      fid: fid,
+      vid: vid,
+      endpoint: endpoint,
+      payload_size: JSON.stringify(payload).length,
+      time_since_request: Date.now() - listingStartTime
+    }, uid);
+
     // Make the actual request to Vinted
-    const response = await fetch(endpoint, {
-      method: method || 'POST',
-      headers: requestHeaders,
-      body: JSON.stringify(payload),
-      redirect: 'manual'
-    });
+    let response;
+    try {
+      response = await fetch(endpoint, {
+        method: method || 'POST',
+        headers: requestHeaders,
+        body: JSON.stringify(payload),
+        redirect: 'manual'
+      });
+    } catch (fetchError) {
+      // Network-level error (DNS, connection refused, CORS, etc.)
+      sendTelemetry('listing_fetch_error', {
+        fid: fid,
+        vid: vid,
+        error: fetchError.message,
+        error_type: fetchError.name,
+        time_since_request: Date.now() - listingStartTime
+      }, uid);
+      throw fetchError;
+    }
 
     debugLog('📡 VINTED LISTING: Response status:', response.status);
+    
+    // Send telemetry for response received
+    sendTelemetry('listing_api_response', {
+      fid: fid,
+      vid: vid,
+      status: response.status,
+      time_since_request: Date.now() - listingStartTime
+    }, uid);
 
     const responseData = await response.json();
 
