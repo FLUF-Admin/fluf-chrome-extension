@@ -642,15 +642,11 @@ async function getVintedTokensDirectly() {
   }
   
   if (!userIdentifier) {
-    debugLog('⚠️ WARNING: No userIdentifier available for scheduled check - skipping API submission');
-    debugLog('⚠️ Tokens will stay fresh in browser but won\'t be sent to backend without user association');
-    // Don't send tokens to backend without knowing which user they belong to
-    // This prevents orphaned auth tokens that can't be associated with any user
-    return { success: false, message: 'No userIdentifier available for scheduled check', skipped: true };
+    debugLog('⚠️ WARNING: No userIdentifier available for scheduled check - auth may not be associated with correct user');
   }
   
   // Use stored domain preference for scheduled checks
-  return await getVintedTokensViaContentScript(userIdentifier);
+  return await getVintedTokensViaContentScript(userIdentifier || '');
 }
 
 // Initialize debug mode when extension starts
@@ -922,9 +918,9 @@ async function processVintedListingQueue() {
   try {
     let now = Date.now();
     if (vintedListingRateDelayMs === 0) {
-      // HUMAN-LIKE TIMING: Increase delays to 30-60 seconds (was 1-10 seconds)
-      // This prevents captcha triggers from rapid execution
-      vintedListingRateDelayMs = getRandomDelay(30_000, 60_000);
+      // HUMAN-LIKE TIMING: Balanced delays (5-10 seconds) to prevent captcha while maintaining throughput
+      // This allows ~50 items to process within 30-minute token window
+      vintedListingRateDelayMs = getRandomDelay(5_000, 10_000);
     }
 
     let timeSinceLast = now - lastVintedListingTime;
@@ -934,9 +930,9 @@ async function processVintedListingQueue() {
       await new Promise(resolve => setTimeout(resolve, waitMs));
     }
 
-    // HUMAN-LIKE TIMING: Increase jitter to 5-15 seconds (was 1-5 seconds)
-    // Adds natural variation to prevent pattern detection
-    let jitter = getRandomDelay(5_000, 15_000);
+    // HUMAN-LIKE TIMING: Natural jitter (2-5 seconds) to prevent pattern detection
+    // Adds variation without excessive delays
+    let jitter = getRandomDelay(2_000, 5_000);
     debugLog(`⏳ VINTED LISTING: Adding jitter delay ${Math.round(jitter / 1000)} seconds (human-like variation)`);
     await new Promise(resolve => setTimeout(resolve, jitter));
 
@@ -961,15 +957,15 @@ async function processVintedListingQueue() {
   } finally {
     lastVintedListingTime = Date.now();
     vintedListingProcessing = false;
-    // HUMAN-LIKE TIMING: Reset delay to 30-60 seconds for next item
-    vintedListingRateDelayMs = getRandomDelay(30_000, 60_000);
+    // HUMAN-LIKE TIMING: Reset delay to 5-10 seconds for next item (balanced for throughput)
+    vintedListingRateDelayMs = getRandomDelay(5_000, 10_000);
 
     if (vintedListingQueue.length > 0) {
-      // HUMAN-LIKE TIMING: Wait 5-15 seconds before processing next item (was 1-5 seconds)
+      // HUMAN-LIKE TIMING: Wait 2-5 seconds before processing next item (maintains flow)
       vintedListingProcessingTimeout = setTimeout(() => {
         vintedListingProcessingTimeout = null;
         processVintedListingQueue();
-      }, getRandomDelay(5_000, 15_000));
+      }, getRandomDelay(2_000, 5_000));
     }
   }
 }
@@ -2636,6 +2632,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 // Function to handle Vinted listing creation
 async function handleVintedListingCreation(request) {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/2ae7c98f-f398-47b3-80a8-fdb88173d4b9',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'FLUF Chrome Extension/background.js:2635',message:'FCU_VINTED_CREATE_LISTING request received',data:{request: request},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,C'})}).catch(()=>{});
+        if (request.action === 'FCU_VINTED_CREATE_LISTING' && request.payload && request.payload.body && request.payload.body.item) {
+          fetch('http://127.0.0.1:7242/ingest/2ae7c98f-f398-47b3-80a8-fdb88173d4b9',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'FLUF Chrome Extension/background.js:2639',message:'Assigned photos before listing',data:{assignedPhotos: request.payload.body.item.assigned_photos},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+        }
+        // #endregion
   let listingStartTime = Date.now();
   debugLog('🚀 VINTED LISTING: Starting listing creation process');
   debugLog('📋 VINTED LISTING: Request data:', { fid: request.fid, vid: request.vid, uid: request.uid });
@@ -2661,6 +2663,11 @@ async function handleVintedListingCreation(request) {
   });
 
   const { payload, headers, endpoint, method, fid, vid, uid, cookies, source } = request;
+  let cookieSource = 'none';
+  
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/2ae7c98f-f398-47b3-80a8-fdb88173d4b9',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'FLUF Chrome Extension/background.js:2665',message:'Vinted listing start',data:{fid:fid,vid:vid,uid:uid,source:source || 'manual',payloadPresent:!!payload,assignedPhotosCount:payload?.item?.assigned_photos?.length ?? 0,assignedPhotoIds:payload?.item?.assigned_photos?.map(photo => photo.id ?? null) ?? []},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'photosPayload'})}).catch(()=>{});
+  // #endregion
   
   // Extract cookies from headers if provided (backend fallback)
   const backendCookies = cookies || (headers && headers.cookies) || null;
@@ -2731,6 +2738,7 @@ async function handleVintedListingCreation(request) {
       // Try to get fresh cookies from extension
       cookieString = await getVintedHeadersCookies(baseUrl, true);
       debugLog('✅ VINTED LISTING: Got fresh cookies from extension');
+      cookieSource = 'extension';
     } catch (extensionError) {
       debugLog('⚠️ VINTED LISTING: Extension cookie extraction failed:', extensionError.message);
       
@@ -2740,6 +2748,7 @@ async function handleVintedListingCreation(request) {
         debugLog('🔄 VINTED LISTING: Using backend-provided cookies as fallback');
         debugLog('📊 VINTED LISTING: Backend cookie length:', cookieString.length);
         debugLog('🍪 VINTED LISTING: Backend cookie source:', cookies ? 'direct cookies param' : 'headers.cookies');
+        cookieSource = 'backend';
       } else {
         debugLog('❌ VINTED LISTING: No backend cookies provided as fallback');
       }
@@ -2868,7 +2877,10 @@ async function handleVintedListingCreation(request) {
       time_since_request: Date.now() - listingStartTime
     }, uid);
 
-    const responseData = await response.json();
+        const responseData = await response.json();
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/2ae7c98f-f398-47b3-80a8-fdb88173d4b9',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'FLUF Chrome Extension/background.js:XXXX',message:'Vinted listing creation response',data:{responseData},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B,C'})}).catch(()=>{});
+        // #endregion
 
     if (response.ok && responseData.item && responseData.item.id) {
       debugLog('✅ VINTED LISTING: Success! Item ID:', responseData.item.id);
