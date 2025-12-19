@@ -1066,11 +1066,22 @@ const TELEMETRY_FLUSH_INTERVAL = 5000; // Flush every 5 seconds
 const TELEMETRY_MAX_BUFFER_SIZE = 20; // Or when buffer reaches 20 events
 
 // Send telemetry event to FLUF backend
-async function sendTelemetry(eventType, data, uid = null) {
+// Parameters:
+// - eventType: Event type/category (e.g., 'vinted_token_refresh')
+// - data: Event data object (may contain channel)
+// - uid: WordPress user ID (0 if not available)
+// - userIdentifier: Platform-specific identifier (e.g., Vinted user ID)
+// - channel: Platform channel (vinted, depop, etc.) - can also be in data.channel
+async function sendTelemetry(eventType, data, uid = null, userIdentifier = null, channel = null) {
+  // Determine channel from parameter, data object, or default to 'unknown'
+  const eventChannel = channel || (data && data.channel) || 'unknown';
+  
   const event = {
     event_type: eventType,
     timestamp: new Date().toISOString(),
     uid: uid,
+    user_identifier: userIdentifier || null,
+    channel: eventChannel,
     data: data,
     extension_version: chrome.runtime.getManifest().version || '1.0.0'
   };
