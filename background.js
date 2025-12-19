@@ -1089,7 +1089,8 @@ async function sendTelemetry(eventType, data, uid = null) {
     'vinted_auth_missing_user_identifier',
     'vinted_cookie_extraction_failed',
     'vinted_cookie_extraction_error',
-    'vinted_auth_api_failed'
+    'vinted_auth_api_failed',
+    'vinted_token_refresh' // Track token refreshes immediately
   ];
   if (criticalEvents.includes(eventType) || telemetryBuffer.length >= TELEMETRY_MAX_BUFFER_SIZE) {
     await flushTelemetry();
@@ -3336,14 +3337,37 @@ function sendTokenToAPI(extractedData, sourceUrl = "", userIdentifier = "", send
       if (successfulResults.length > 0) {
         logStatus(`Data sent successfully`, true);
         
-        // Send telemetry for successful API submission
-        sendTelemetry('vinted_auth_api_success', {
-          channel: channel,
-          user_identifier: userIdentifier || null,
-          base_url: baseUrl || sourceUrl,
-          endpoints_tried: results.length,
-          endpoints_succeeded: successfulResults.length
-        }, userIdentifier || null);
+        // Detect if this is a token refresh (check if we previously had tokens for this user)
+        const storageKey = `last_${channel}_auth_success_${userIdentifier || 'unknown'}`;
+        chrome.storage.local.get([storageKey], async (stored) => {
+          const lastSuccessTime = stored[storageKey];
+          const now = Date.now();
+          const isTokenRefresh = lastSuccessTime && (now - lastSuccessTime) < (30 * 24 * 60 * 60 * 1000); // Within 30 days
+          
+          // Store current success timestamp
+          chrome.storage.local.set({ [storageKey]: now });
+          
+          // Send telemetry for successful API submission
+          await sendTelemetry('vinted_auth_api_success', {
+            channel: channel,
+            user_identifier: userIdentifier || null,
+            base_url: baseUrl || sourceUrl,
+            endpoints_tried: results.length,
+            endpoints_succeeded: successfulResults.length,
+            is_token_refresh: isTokenRefresh,
+            time_since_last_auth_ms: lastSuccessTime ? (now - lastSuccessTime) : null
+          }, userIdentifier || null);
+          
+          // Send specific token refresh event if this is a refresh
+          if (isTokenRefresh && channel === 'vinted') {
+            await sendTelemetry('vinted_token_refresh', {
+              user_identifier: userIdentifier || null,
+              base_url: baseUrl || sourceUrl,
+              time_since_last_auth_ms: now - lastSuccessTime,
+              time_since_last_auth_minutes: Math.round((now - lastSuccessTime) / (60 * 1000))
+            }, userIdentifier || null);
+          }
+        });
         
         // Broadcast auth success to frontend Extension Status Panel
         if (channel === 'vinted') {
