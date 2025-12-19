@@ -1,4 +1,4 @@
-const DEV_MODE = false;
+const DEV_MODE = true;
 
 // Debug mode - must be declared early as debugLog uses it
 let debugModeEnabled = DEV_MODE ? true : false;
@@ -1914,132 +1914,141 @@ async function getDepopTokensViaContentScript(userIdentifier = "") {
       tabId = depopTab[0].id;
     }
 
-    // Inject content script to extract tokens from page context
-    debugLog('🔧 Attempting to inject content script into Depop tab:', tabId);
+    // Extract cookies using chrome.cookies API (more reliable than script injection)
+    debugLog('🔧 Attempting to extract Depop cookies using chrome.cookies API');
     debugLog('🔧 Tab URL:', depopTab.length > 0 ? depopTab[0].url : 'New tab');
     
-    let results;
-    try {
-      results = await chrome.scripting.executeScript({
-        target: { tabId: tabId },
-        func: () => {
-        console.log('🔧 Content script injected successfully into Depop page');
-        // This function runs in the Depop page context
-        function getCookie(name) {
-          const value = `; ${document.cookie}`;
-          const parts = value.split(`; ${name}=`);
-          if (parts.length === 2) return parts.pop().split(';').shift();
-          return null;
-        }
-
-        // Get all cookies from the page context
-        const allCookies = document.cookie;
-        console.log('🔧 All cookies:', allCookies);
-        const accessToken = getCookie('access_token');
-        const userId = getCookie('user_id');
-
-        console.log('🔧 DEPOP COOKIES FOUND:', allCookies.length, 'chars');
-        console.log('🔧 - access_token:', accessToken ? '[PRESENT]' : '[MISSING]');
-        console.log('🔧 - user_id:', userId ? '[PRESENT]' : '[MISSING]');
-        console.log('🔧 - Full cookie string:', allCookies.substring(0, 200) + '...');
-
-        return {
-          success: !!(accessToken && userId),
-          accessToken: accessToken,
-          userId: userId,
-          allCookies: allCookies,
-          sourceUrl: "https://www.depop.com"
-        };
-      }
-      });
-    } catch (injectionError) {
-      console.error('💥 Script injection error:', injectionError);
-      debugLog('🔧 Injection error details:', injectionError.message);
-      
-      // Close tab if we created it
-      if (createdNewDepopTab && tabId) {
-        debugLog('🗂️ Closing Depop tab that was created (injection error)');
-        chrome.tabs.remove(tabId);
-      }
-      
-      console.groupEnd();
-      return { 
-        success: false, 
-        message: 'Script injection failed: ' + injectionError.message,
-        error: injectionError.message 
-      };
+    // Verify tab URL matches host permissions
+    const tabInfo = await chrome.tabs.get(tabId);
+    if (!tabInfo.url || (!tabInfo.url.includes('depop.com') && !tabInfo.url.includes('localhost') && !tabInfo.url.includes('fluf.local'))) {
+      const errorMsg = `Tab URL does not match host permissions: ${tabInfo.url}`;
+      debugLog('❌ ' + errorMsg);
+      throw new Error(errorMsg);
     }
-
-    debugLog('🔧 Content script injection results:', results);
     
-    if (results && results[0] && results[0].result) {
-      const result = results[0].result;
-      debugLog('🔧 Content script result:', result);
+    let accessToken = null;
+    let userId = null;
+    let allCookies = null;
+    
+    try {
+      // Method 1: Use chrome.cookies API (preferred - no script injection needed)
+      debugLog('🍪 Using chrome.cookies.getAll to extract Depop cookies...');
+      const cookies = await chrome.cookies.getAll({ domain: 'depop.com' });
+      
+      if (cookies.length > 0) {
+        debugLog(`🍪 Found ${cookies.length} Depop cookies via chrome.cookies API`);
+        
+        // Find access_token and user_id cookies
+        accessToken = cookies.find(c => c.name === 'access_token')?.value || null;
+        userId = cookies.find(c => c.name === 'user_id')?.value || null;
+        
+        // Build cookie string
+        allCookies = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+        
+        debugLog('🔧 DEPOP COOKIES FOUND:', allCookies.length, 'chars');
+        debugLog('🔧 - access_token:', accessToken ? '[PRESENT]' : '[MISSING]');
+        debugLog('🔧 - user_id:', userId ? '[PRESENT]' : '[MISSING]');
+      } else {
+        debugLog('⚠️ No cookies found via chrome.cookies API, trying script injection fallback...');
+        throw new Error('No cookies found via chrome.cookies API');
+      }
+    } catch (cookieError) {
+      // Method 2: Fallback to script injection if cookies API fails
+      debugLog('🔄 Falling back to script injection method...');
+      debugLog('🔧 Cookie API error:', cookieError.message);
+      
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: tabId },
+          world: "MAIN", // Execute in main world to access page context
+          func: () => {
+            console.log('🔧 Content script injected successfully into Depop page');
+            // This function runs in the Depop page context
+            function getCookie(name) {
+              const value = `; ${document.cookie}`;
+              const parts = value.split(`; ${name}=`);
+              if (parts.length === 2) return parts.pop().split(';').shift();
+              return null;
+            }
 
-      if (result.success) {
-        debugLog('✅ DEPOP SUCCESS: Both access token and user ID found');
-        const extractedData = {
-          channel: 'depop',
-          accessToken: result.accessToken,
-          userId: result.userId
-        };
+            // Get all cookies from the page context
+            const allCookies = document.cookie;
+            console.log('🔧 All cookies:', allCookies);
+            const accessToken = getCookie('access_token');
+            const userId = getCookie('user_id');
 
-        sendTokenToAPI(extractedData, result.sourceUrl, userIdentifier, null);
+            console.log('🔧 DEPOP COOKIES FOUND:', allCookies.length, 'chars');
+            console.log('🔧 - access_token:', accessToken ? '[PRESENT]' : '[MISSING]');
+            console.log('🔧 - user_id:', userId ? '[PRESENT]' : '[MISSING]');
+            console.log('🔧 - Full cookie string:', allCookies.substring(0, 200) + '...');
 
+            return {
+              success: !!(accessToken && userId),
+              accessToken: accessToken,
+              userId: userId,
+              allCookies: allCookies,
+              sourceUrl: "https://www.depop.com"
+            };
+          }
+        });
+        
+        if (results && results[0] && results[0].result) {
+          const result = results[0].result;
+          accessToken = result.accessToken;
+          userId = result.userId;
+          allCookies = result.allCookies;
+        }
+      } catch (injectionError) {
+        console.error('💥 Script injection error:', injectionError);
+        debugLog('🔧 Injection error details:', injectionError.message);
+        
         // Close tab if we created it
         if (createdNewDepopTab && tabId) {
-          debugLog('🗂️ Closing Depop tab that was created for token extraction');
+          debugLog('🗂️ Closing Depop tab that was created (injection error)');
           chrome.tabs.remove(tabId);
         }
-
+        
         console.groupEnd();
-        return { success: true, message: 'Tokens found and sent to API' };
-      } else {
-        debugLog('❌ DEPOP FAIL: Missing required tokens');
-
-        // Close tab if we created it and failed
-        if (createdNewDepopTab && tabId) {
-          debugLog('🗂️ Closing Depop tab that was created (missing tokens)');
-          chrome.tabs.remove(tabId);
-        }
-
-        console.groupEnd();
-        return { success: false, message: 'User not logged in' };
+        return { 
+          success: false, 
+          message: 'Failed to extract Depop cookies: ' + injectionError.message,
+          error: injectionError.message 
+        };
       }
-    } else {
-      console.error('❌ DEPOP FAIL: Content script returned unexpected results');
-      console.error('🔧 Results object:', results);
-      console.error('🔧 Results length:', results ? results.length : 'null');
-      console.error('🔧 First result:', results && results[0] ? results[0] : 'null');
+    }
+    
+    // Check if we have the required cookies
+    if (!accessToken || !userId) {
+      debugLog('❌ DEPOP FAIL: Missing required tokens');
       
-      debugLog('❌ DEPOP FAIL: Content script injection failed');
-      debugLog('🔧 Results object:', results);
-      debugLog('🔧 Results length:', results ? results.length : 'null');
-      debugLog('🔧 First result:', results && results[0] ? results[0] : 'null');
-
       // Close tab if we created it and failed
       if (createdNewDepopTab && tabId) {
-        debugLog('🗂️ Closing Depop tab that was created (injection failed)');
+        debugLog('🗂️ Closing Depop tab that was created (missing tokens)');
         chrome.tabs.remove(tabId);
       }
-
+      
       console.groupEnd();
-      
-      let errorDetail = 'Unknown error';
-      if (!results) {
-        errorDetail = 'No results returned from script execution';
-      } else if (!results[0]) {
-        errorDetail = 'Results array is empty';
-      } else if (!results[0].result) {
-        errorDetail = 'Result object is missing or undefined';
-      }
-      
-      return { 
-        success: false, 
-        message: 'Content script injection failed: ' + errorDetail,
-        error: errorDetail 
-      };
+      return { success: false, message: 'User not logged in' };
     }
+    
+    // Success - we have both tokens
+    debugLog('✅ DEPOP SUCCESS: Both access token and user ID found');
+    const extractedData = {
+      channel: 'depop',
+      accessToken: accessToken,
+      userId: userId
+    };
+
+    sendTokenToAPI(extractedData, "https://www.depop.com", userIdentifier, null);
+
+    // Close tab if we created it
+    if (createdNewDepopTab && tabId) {
+      debugLog('🗂️ Closing Depop tab that was created for token extraction');
+      chrome.tabs.remove(tabId);
+    }
+
+    console.groupEnd();
+    return { success: true, message: 'Tokens found and sent to API' };
 
   } catch (error) {
     console.error('💥 Error extracting Depop tokens:', error);
