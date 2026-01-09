@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FLUF Connect Utility Extension",
-  "version": "1.8.0",
+  "version": "1.8.5",
   "description": "Supports the functionality of FLUF Connect (fluf.io/connect)",
   "permissions": [
     "alarms",
@@ -9,11 +9,23 @@
     "scripting",
     "tabs",
     "webRequest",
-    "cookies"
+    "cookies",
+    "declarativeNetRequest"
   ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "vinted_headers",
+        "enabled": true,
+        "path": "dnr_rules.json"
+      }
+    ]
+  },
   "host_permissions": [
     "https://fluf.io/*",
+    "https://*.fluf.io/*",
     "*://*.depop.com/*",
+    "*://*.facebook.com/*",
     "*://*.vinted.co.uk/*",
     "*://*.vinted.com/*",
     "*://*.vinted.at/*",
@@ -45,11 +57,21 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://fluf.io/*", "http://localhost/*", "http://fluf.local/*"],
+      "matches": ["https://fluf.io/*", "https://*.fluf.io/*", "http://localhost/*", "http://fluf.local/*"],
       "js": ["content.js"]
     }
   ],
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
   "action": {
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    }
   }
 }

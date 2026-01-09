@@ -1,4 +1,4 @@
-const DEV_MODE = true;
+const DEV_MODE = false;
 
 // Debug mode - must be declared early as debugLog uses it
 let debugModeEnabled = DEV_MODE ? true : false;
@@ -456,6 +456,193 @@ const COUNTRY_TO_VINTED_DOMAIN = {
   'DEFAULT': 'https://www.vinted.co.uk/'
 };
 
+// ============================================================================
+// CLIENT HINTS HEADERS - Anti-detection for Vinted API requests
+// ============================================================================
+
+/**
+ * Get Client Hints headers that Chrome normally sends on navigation requests
+ * but NOT on fetch() requests. Adding these makes our API calls look more
+ * like real browser navigation requests.
+ *
+ * Uses the ACTUAL browser values (not spoofed) via navigator.userAgentData
+ *
+ * @returns {Object} Headers object with sec-ch-ua headers
+ */
+function getClientHintHeaders() {
+  const headers = {};
+
+  try {
+    if (navigator.userAgentData) {
+      // Modern browsers with User-Agent Client Hints API
+      const brands = navigator.userAgentData.brands;
+      if (brands?.length) {
+        headers['sec-ch-ua'] = brands.map(b => `"${b.brand}";v="${b.version}"`).join(', ');
+      }
+      headers['sec-ch-ua-mobile'] = navigator.userAgentData.mobile ? '?1' : '?0';
+      if (navigator.userAgentData.platform) {
+        headers['sec-ch-ua-platform'] = `"${navigator.userAgentData.platform}"`;
+      }
+
+      debugLog('🔍 CLIENT HINTS: Using navigator.userAgentData:', {
+        brands: headers['sec-ch-ua'],
+        mobile: headers['sec-ch-ua-mobile'],
+        platform: headers['sec-ch-ua-platform']
+      });
+    } else {
+      // Fallback for older Chrome or if userAgentData unavailable
+      // Detect platform from userAgent string
+      const ua = navigator.userAgent;
+      let platform = '"Windows"';
+      if (ua.includes('Mac OS X')) platform = '"macOS"';
+      else if (ua.includes('Linux')) platform = '"Linux"';
+      else if (ua.includes('Android')) platform = '"Android"';
+      else if (ua.includes('iOS') || ua.includes('iPhone') || ua.includes('iPad')) platform = '"iOS"';
+
+      // Extract Chrome version from user agent
+      const chromeMatch = ua.match(/Chrome\/(\d+)/);
+      const chromeVersion = chromeMatch ? chromeMatch[1] : '120';
+
+      headers['sec-ch-ua'] = `"Chromium";v="${chromeVersion}", "Google Chrome";v="${chromeVersion}", "Not-A.Brand";v="99"`;
+      headers['sec-ch-ua-mobile'] = '?0';
+      headers['sec-ch-ua-platform'] = platform;
+
+      debugLog('🔍 CLIENT HINTS: Using fallback values (no userAgentData):', headers);
+    }
+  } catch (error) {
+    debugLog('⚠️ CLIENT HINTS: Error getting client hints:', error);
+    // Return empty object - headers will just be missing
+  }
+
+  return headers;
+}
+
+// ============================================================================
+// ERROR 106 RETRY LOGIC - Constants and configuration
+// ============================================================================
+
+// Error codes that indicate auth/session issues and are worth retrying
+// Note: 403 (Forbidden) excluded - indicates permissions issue, not expired session
+const RETRYABLE_AUTH_ERROR_CODES = [106, 401];
+
+// Maximum number of retry attempts for auth errors
+const MAX_AUTH_RETRY_ATTEMPTS = 1;
+
+// Delay before retry attempt (ms)
+const AUTH_RETRY_DELAY_MS = 1500;
+
+/**
+ * Check if an error response indicates an auth/session issue that can be retried
+ *
+ * @param {Object} responseData - Parsed JSON response from Vinted
+ * @param {number} httpStatus - HTTP status code
+ * @returns {boolean} True if this is a retryable auth error
+ */
+function isRetryableAuthError(responseData, httpStatus) {
+  // Check HTTP status
+  if (httpStatus === 401 || httpStatus === 403) {
+    return true;
+  }
+
+  // Check Vinted-specific error codes
+  const errorCode = responseData?.code || responseData?.error?.code;
+  if (errorCode && RETRYABLE_AUTH_ERROR_CODES.includes(errorCode)) {
+    return true;
+  }
+
+  // Check error message content
+  const errorMessage = (responseData?.message || responseData?.error?.message || '').toLowerCase();
+  const authKeywords = ['unauthorized', 'session expired', 'invalid token', 'authentication', 'not authenticated', 'login required'];
+
+  if (authKeywords.some(keyword => errorMessage.includes(keyword))) {
+    return true;
+  }
+
+  return false;
+}
+
+// ============================================================================
+// DECLARATIVE NET REQUEST (DNR) - Dynamic header modification
+// ============================================================================
+
+/**
+ * Initialize dynamic DNR rules for client hints
+ * This sets the sec-ch-ua header dynamically based on the browser's actual values
+ * Complements the static rules in dnr_rules.json
+ */
+async function initializeDynamicDNRRules() {
+  try {
+    // Check if declarativeNetRequest API is available
+    if (!chrome.declarativeNetRequest) {
+      debugLog('⚠️ DNR: declarativeNetRequest API not available');
+      return;
+    }
+
+    // Get client hints values
+    let secChUa = '"Chromium";v="120", "Google Chrome";v="120", "Not-A.Brand";v="99"';
+    let secChUaPlatform = '"macOS"';
+
+    if (navigator.userAgentData) {
+      const brands = navigator.userAgentData.brands;
+      if (brands?.length) {
+        secChUa = brands.map(b => `"${b.brand}";v="${b.version}"`).join(', ');
+      }
+      if (navigator.userAgentData.platform) {
+        secChUaPlatform = `"${navigator.userAgentData.platform}"`;
+      }
+    }
+
+    // Build dynamic rules for all Vinted domains
+    const dynamicRules = VINTED_DOMAINS.map((domain, index) => ({
+      id: 1000 + index, // Use IDs 1000+ for dynamic rules
+      priority: 2, // Higher priority than static rules
+      action: {
+        type: 'modifyHeaders',
+        requestHeaders: [
+          {
+            header: 'sec-ch-ua',
+            operation: 'set',
+            value: secChUa
+          },
+          {
+            header: 'sec-ch-ua-platform',
+            operation: 'set',
+            value: secChUaPlatform
+          }
+        ]
+      },
+      condition: {
+        urlFilter: `*://${domain}/api/*`,
+        resourceTypes: ['xmlhttprequest']
+      }
+    }));
+
+    // Get existing dynamic rule IDs to remove them first
+    const existingRules = await chrome.declarativeNetRequest.getDynamicRules();
+    const existingRuleIds = existingRules.map(rule => rule.id);
+
+    // Update rules
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: existingRuleIds,
+      addRules: dynamicRules
+    });
+
+    debugLog('✅ DNR: Dynamic client hints rules initialized for', VINTED_DOMAINS.length, 'domains');
+    debugLog('📋 DNR: sec-ch-ua:', secChUa);
+    debugLog('📋 DNR: sec-ch-ua-platform:', secChUaPlatform);
+
+  } catch (error) {
+    debugLog('❌ DNR: Error initializing dynamic rules:', error);
+    // Non-fatal - extension will still work with inline headers
+  }
+}
+
+// Initialize DNR rules on extension load
+initializeDynamicDNRRules();
+
+// Re-initialize DNR rules periodically (in case browser updates)
+setInterval(initializeDynamicDNRRules, 60 * 60 * 1000); // Every hour
+
 // Helper function to check if URL is a Vinted domain
 function isVintedDomain(url) {
   try {
@@ -578,7 +765,69 @@ chrome.runtime.onInstalled.addListener((details) => {
 // Direct extraction functions for scheduled checks
 async function getDepopTokensDirectly() {
   debugLog('🔄 SCHEDULED DEPOP CHECK');
-  return await getDepopTokensViaContentScript();
+
+  // Try to get userIdentifier from storage (set during last manual auth)
+  let userIdentifier = null;
+  try {
+    const storage = await chrome.storage.local.get(['depop_last_user_identifier']);
+    userIdentifier = storage.depop_last_user_identifier || null;
+    debugLog('🔍 Retrieved stored Depop userIdentifier:', userIdentifier);
+  } catch (error) {
+    debugLog('⚠️ Error retrieving stored Depop userIdentifier:', error);
+  }
+
+  // Fallback: Try to get userIdentifier from active FLUF Connect tab
+  if (!userIdentifier) {
+    try {
+      const tabs = await chrome.tabs.query({
+        url: ['*://fluf.io/*', '*://fluf.local/*', '*://localhost/*']
+      });
+
+      if (tabs.length > 0) {
+        // Try to get userIdentifier from the first FLUF tab
+        try {
+          const results = await chrome.scripting.executeScript({
+            target: { tabId: tabs[0].id },
+            func: () => {
+              // Try to get from cookie
+              const cookieMatch = document.cookie.match(/fc_user_identifier=([^;]+)/);
+              if (cookieMatch) return cookieMatch[1];
+
+              // Try to get from DOM element
+              const element = document.getElementById('fc-user-identifier');
+              if (element) {
+                return element.getAttribute('data-user-id') || element.textContent;
+              }
+
+              // Try to get from window variables
+              if (window._currentUserID) return window._currentUserID.toString();
+              if (window._userIdentifier) return window._userIdentifier.toString();
+
+              return null;
+            }
+          });
+
+          if (results && results[0] && results[0].result) {
+            userIdentifier = results[0].result;
+            debugLog('✅ Retrieved Depop userIdentifier from active FLUF tab:', userIdentifier);
+
+            // Store it for future use
+            chrome.storage.local.set({ depop_last_user_identifier: userIdentifier });
+          }
+        } catch (scriptError) {
+          debugLog('⚠️ Could not read userIdentifier from tab (may not have permission):', scriptError.message);
+        }
+      }
+    } catch (tabError) {
+      debugLog('⚠️ Error querying tabs for Depop userIdentifier:', tabError);
+    }
+  }
+
+  if (!userIdentifier) {
+    debugLog('⚠️ WARNING: No userIdentifier available for scheduled Depop check - auth may not be associated with correct user');
+  }
+
+  return await getDepopTokensViaContentScript(userIdentifier || '');
 }
 
 async function getVintedTokensDirectly() {
@@ -930,10 +1179,9 @@ async function processVintedListingQueue() {
       await new Promise(resolve => setTimeout(resolve, waitMs));
     }
 
-    // HUMAN-LIKE TIMING: Natural jitter (2-5 seconds) to prevent pattern detection
-    // Adds variation without excessive delays
-    let jitter = getRandomDelay(2_000, 5_000);
-    debugLog(`⏳ VINTED LISTING: Adding jitter delay ${Math.round(jitter / 1000)} seconds (human-like variation)`);
+    // HUMAN-LIKE TIMING: Natural jitter (1-3 seconds) to prevent pattern detection
+    let jitter = getRandomDelay(1_000, 3_000);
+    debugLog(`⏳ VINTED LISTING: Adding jitter delay ${Math.round(jitter / 1000)} seconds`);
     await new Promise(resolve => setTimeout(resolve, jitter));
 
     let result = await handleVintedListingCreation(request);
@@ -957,15 +1205,15 @@ async function processVintedListingQueue() {
   } finally {
     lastVintedListingTime = Date.now();
     vintedListingProcessing = false;
-    // HUMAN-LIKE TIMING: Reset delay to 5-10 seconds for next item (balanced for throughput)
+    // Reset delay to 5-10 seconds for next item
     vintedListingRateDelayMs = getRandomDelay(5_000, 10_000);
 
+    // Process next item immediately if queue has items
     if (vintedListingQueue.length > 0) {
-      // HUMAN-LIKE TIMING: Wait 2-5 seconds before processing next item (maintains flow)
       vintedListingProcessingTimeout = setTimeout(() => {
         vintedListingProcessingTimeout = null;
         processVintedListingQueue();
-      }, getRandomDelay(2_000, 5_000));
+      }, 0);
     }
   }
 }
@@ -1651,7 +1899,7 @@ async function getVintedCookiesWithDevTools(baseUrl = 'https://www.vinted.co.uk/
 async function getVintedHeadersCookies(baseUrl = 'https://www.vinted.co.uk/', isManualTrigger = false) {
   debugLog('🔄 VINTED: Using chrome.cookies.getAll for cookie extraction...');
   const result = await getVintedCookiesWithDevTools(baseUrl, isManualTrigger);
-  
+
   if (result.success) {
     return result.cookieString;
   } else {
@@ -1659,6 +1907,496 @@ async function getVintedHeadersCookies(baseUrl = 'https://www.vinted.co.uk/', is
   }
 }
 
+/**
+ * Send fresh Vinted cookies to FC backend for persistence.
+ * This is called during auth retry to ensure fresh cookies are saved for future use.
+ *
+ * @param {Array} cookies - Array of cookie objects from chrome.cookies.getAll
+ * @param {string|number} uid - User identifier (WordPress UID)
+ * @param {string} baseUrl - Vinted base URL (e.g., 'https://www.vinted.co.uk/')
+ * @returns {Promise<boolean>} - True if successfully sent to FC
+ */
+async function sendVintedCookiesToFC(cookies, uid, baseUrl) {
+  if (!cookies || !Array.isArray(cookies) || cookies.length === 0) {
+    debugLog('⚠️ sendVintedCookiesToFC: No cookies to send');
+    return false;
+  }
+
+  // Build cookie string format (like fullCookies)
+  const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+
+  // Verify we have access_token_web
+  const hasAccessTokenWeb = cookieString.includes('access_token_web=');
+  if (!hasAccessTokenWeb) {
+    debugLog('⚠️ sendVintedCookiesToFC: Cookies missing access_token_web, skipping send');
+    return false;
+  }
+
+  const requestBody = {
+    channel: 'vinted',
+    cookies: cookieString,
+    has_access_token_web: hasAccessTokenWeb,
+    is_retry_refresh: true // Flag to indicate this is from auth retry
+  };
+
+  if (uid) {
+    requestBody.userIdentifier = uid;
+  }
+
+  if (baseUrl) {
+    requestBody.base_url = baseUrl;
+    const country = getCountryFromVintedUrl(baseUrl);
+    if (country) {
+      requestBody.country = country;
+    }
+  }
+
+  debugLog('📤 sendVintedCookiesToFC: Sending cookies to FC backend...');
+  debugLog('  - Cookie count:', cookies.length);
+  debugLog('  - UID:', uid);
+  debugLog('  - Base URL:', baseUrl);
+
+  // Send to all configured endpoints
+  const fetchPromises = ENDPOINTS.map(endpoint => {
+    return fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(requestBody)
+    }).then(response => {
+      if (response.ok) {
+        debugLog(`✅ sendVintedCookiesToFC: Successfully sent to ${endpoint}`);
+        return true;
+      } else {
+        debugLog(`⚠️ sendVintedCookiesToFC: Failed to send to ${endpoint} (status: ${response.status})`);
+        return false;
+      }
+    }).catch(error => {
+      debugLog(`❌ sendVintedCookiesToFC: Error sending to ${endpoint}:`, error.message);
+      return false;
+    });
+  });
+
+  const results = await Promise.all(fetchPromises);
+  const anySuccess = results.some(r => r === true);
+
+  if (anySuccess) {
+    sendTelemetry('vinted_cookies_sent_to_fc_during_retry', {
+      uid: uid,
+      base_url: baseUrl,
+      cookie_count: cookies.length
+    }, uid);
+  }
+
+  return anySuccess;
+}
+
+// ============================================================================
+// VINTED IMAGE UPLOAD - Upload images to Vinted using extension cookies
+// ============================================================================
+
+/**
+ * Apply image distortion transformations to bypass duplicate detection
+ * Migrated from PHP process_image_for_bypass() to run in extension with Canvas API
+ *
+ * @param {Blob} imageBlob - Original image blob
+ * @param {string} distortionLevel - 'unchanged', 'medium', or 'high'
+ * @returns {Promise<Blob>} - Processed image blob
+ */
+async function processImageForBypass(imageBlob, distortionLevel = 'unchanged') {
+  // If no distortion needed, return original
+  if (distortionLevel === 'unchanged' || !distortionLevel) {
+    debugLog('📷 IMAGE BYPASS: No distortion requested, using original image');
+    return imageBlob;
+  }
+
+  debugLog(`📷 IMAGE BYPASS: Applying ${distortionLevel} distortion...`);
+
+  try {
+    // Use createImageBitmap instead of new Image() - works in service workers
+    const imageBitmap = await createImageBitmap(imageBlob);
+
+    let width = imageBitmap.width;
+    let height = imageBitmap.height;
+
+    // Resize if too large (optimization)
+    const maxDimension = 1200;
+    if (width > maxDimension || height > maxDimension) {
+      if (width > height) {
+        height = Math.round((height * maxDimension) / width);
+        width = maxDimension;
+      } else {
+        width = Math.round((width * maxDimension) / height);
+        height = maxDimension;
+      }
+    }
+
+    // Technique 1: Micro-rotation
+    let rotationAngle = 0;
+    if (distortionLevel === 'medium') {
+      rotationAngle = (Math.random() * 0.6 - 0.3); // -0.3 to 0.3 degrees
+      if (rotationAngle === 0) rotationAngle = 0.15;
+    } else if (distortionLevel === 'high') {
+      rotationAngle = (Math.random() * 1.0 - 0.5); // -0.5 to 0.5 degrees
+      if (rotationAngle === 0) rotationAngle = 0.2;
+    }
+
+    // Technique 2: Border addition
+    let borderSize = 0;
+    if (distortionLevel === 'medium') {
+      borderSize = Math.floor(Math.random() * 2) + 1; // 1-2px
+    } else if (distortionLevel === 'high') {
+      borderSize = Math.floor(Math.random() * 3) + 1; // 1-3px
+    }
+
+    const newWidth = width + (borderSize * 2);
+    const newHeight = height + (borderSize * 2);
+
+    // Use OffscreenCanvas instead of document.createElement('canvas') - works in service workers
+    const canvas = new OffscreenCanvas(newWidth, newHeight);
+    const ctx = canvas.getContext('2d');
+
+    // Fill with white background
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, newWidth, newHeight);
+
+    // Apply rotation if needed
+    if (rotationAngle !== 0) {
+      ctx.save();
+      ctx.translate(newWidth / 2, newHeight / 2);
+      ctx.rotate((rotationAngle * Math.PI) / 180);
+      ctx.translate(-newWidth / 2, -newHeight / 2);
+    }
+
+    // Draw the image (with border offset)
+    ctx.drawImage(imageBitmap, borderSize, borderSize, width, height);
+
+    if (rotationAngle !== 0) {
+      ctx.restore();
+    }
+
+    // Technique 3: Subtle pixel manipulation (for high distortion)
+    if (distortionLevel === 'high') {
+      const imageData = ctx.getImageData(0, 0, newWidth, newHeight);
+      const data = imageData.data;
+      const stepSize = Math.max(10, Math.floor(newWidth / 100));
+      const adjustmentRange = 2;
+
+      for (let y = 0; y < newHeight; y += stepSize) {
+        for (let x = 0; x < newWidth; x += stepSize) {
+          if (Math.random() < 0.05) { // 5% of pixels
+            const idx = (y * newWidth + x) * 4;
+            data[idx] = Math.min(255, Math.max(0, data[idx] + Math.floor(Math.random() * adjustmentRange * 2 - adjustmentRange)));
+            data[idx + 1] = Math.min(255, Math.max(0, data[idx + 1] + Math.floor(Math.random() * adjustmentRange * 2 - adjustmentRange)));
+            data[idx + 2] = Math.min(255, Math.max(0, data[idx + 2] + Math.floor(Math.random() * adjustmentRange * 2 - adjustmentRange)));
+          }
+        }
+      }
+      ctx.putImageData(imageData, 0, 0);
+    }
+
+    // Determine JPEG quality based on distortion level
+    let quality = 0.99;
+    if (distortionLevel === 'high') {
+      quality = 0.85 + Math.random() * 0.05; // 85-90%
+    } else if (distortionLevel === 'medium') {
+      quality = 0.90 + Math.random() * 0.05; // 90-95%
+    }
+
+    // Convert to blob using OffscreenCanvas.convertToBlob()
+    const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: quality });
+
+    if (blob) {
+      debugLog(`📷 IMAGE BYPASS: Distortion applied - Level: ${distortionLevel}, Quality: ${Math.round(quality * 100)}%, Size: ${Math.round(blob.size / 1024)}KB`);
+      imageBitmap.close(); // Clean up
+      return blob;
+    } else {
+      debugLog('📷 IMAGE BYPASS: Failed to create blob, using original');
+      imageBitmap.close();
+      return imageBlob;
+    }
+  } catch (error) {
+    debugLog('📷 IMAGE BYPASS: Error during processing, using original:', error.message);
+    return imageBlob;
+  }
+}
+
+/**
+ * Upload a single image to Vinted using extension cookies
+ * This runs in the extension context, using the same session as listing creation
+ *
+ * @param {string} imageUrl - URL of the image to upload
+ * @param {string} baseUrl - Vinted base URL (e.g., 'https://www.vinted.co.uk/')
+ * @param {string} cookieString - Cookie string from getVintedHeadersCookies
+ * @param {string} csrfToken - CSRF token for the request
+ * @param {string} anonId - Anon ID for the request (optional)
+ * @param {string} distortionLevel - Image distortion level ('unchanged', 'medium', 'high')
+ * @returns {Promise<{success: boolean, photoId?: number, error?: string}>}
+ */
+async function uploadVintedPhoto(imageUrl, baseUrl, cookieString, csrfToken, anonId = null, distortionLevel = 'unchanged') {
+  debugLog(`📸 VINTED PHOTO UPLOAD: Starting upload for ${imageUrl.substring(0, 50)}...`);
+
+  // Image metadata for diagnostics
+  const imageMeta = {
+    source_url: imageUrl,
+    distortion_level: distortionLevel
+  };
+
+  try {
+    // Step 1: Fetch the image
+    debugLog('📸 VINTED PHOTO UPLOAD: Fetching image...');
+    const imageResponse = await fetch(imageUrl);
+    if (!imageResponse.ok) {
+      throw new Error(`Failed to fetch image: HTTP ${imageResponse.status}`);
+    }
+
+    let imageBlob = await imageResponse.blob();
+
+    // Capture original image metadata
+    imageMeta.original_size_bytes = imageBlob.size;
+    imageMeta.original_size_kb = Math.round(imageBlob.size / 1024);
+    imageMeta.original_mime_type = imageBlob.type;
+
+    debugLog(`📸 VINTED PHOTO UPLOAD: Got image blob, size: ${imageMeta.original_size_kb}KB, type: ${imageMeta.original_mime_type}`);
+
+    // Step 2: Get image dimensions (before distortion)
+    try {
+      const dimensions = await getImageDimensions(imageBlob);
+      imageMeta.original_width = dimensions.width;
+      imageMeta.original_height = dimensions.height;
+      debugLog(`📸 VINTED PHOTO UPLOAD: Original dimensions: ${dimensions.width}x${dimensions.height}`);
+    } catch (dimError) {
+      debugLog('📸 VINTED PHOTO UPLOAD: Could not get dimensions:', dimError.message);
+    }
+
+    // Step 3: Apply image distortion if requested (for bypass feature)
+    if (distortionLevel && distortionLevel !== 'unchanged') {
+      imageBlob = await processImageForBypass(imageBlob, distortionLevel);
+
+      // Capture processed image metadata
+      imageMeta.processed_size_bytes = imageBlob.size;
+      imageMeta.processed_size_kb = Math.round(imageBlob.size / 1024);
+      imageMeta.processed_mime_type = imageBlob.type;
+
+      // Get processed dimensions
+      try {
+        const processedDimensions = await getImageDimensions(imageBlob);
+        imageMeta.processed_width = processedDimensions.width;
+        imageMeta.processed_height = processedDimensions.height;
+      } catch (dimError) {
+        // Ignore dimension errors for processed image
+      }
+    }
+
+    // Final size for upload
+    imageMeta.upload_size_bytes = imageBlob.size;
+    imageMeta.upload_size_kb = Math.round(imageBlob.size / 1024);
+
+    // Step 4: Prepare upload request
+    const originUrl = baseUrl.replace(/\/$/, '');
+    const uploadEndpoint = `${originUrl}/api/v2/photos`;
+    const tempUuid = crypto.randomUUID();
+
+    const formData = new FormData();
+    formData.append('photo[type]', 'item');
+    formData.append('photo[temp_uuid]', tempUuid);
+    formData.append('photo[file]', imageBlob, 'photo.jpg');
+
+    imageMeta.temp_uuid = tempUuid;
+
+    // Get client hints for anti-detection
+    const clientHints = getClientHintHeaders();
+
+    const headers = {
+      'Cookie': cookieString,
+      'User-Agent': navigator.userAgent,
+      // Client hints - makes fetch look more like real browser requests
+      ...clientHints,
+      'Referer': `${originUrl}/items/new`,
+      'Origin': originUrl,
+      'X-CSRF-token': csrfToken,
+      'Accept': 'application/json, text/plain, */*',
+      'Accept-Language': 'en-uk-fr',
+      'Sec-Fetch-Dest': 'empty',
+      'Sec-Fetch-Mode': 'cors',
+      'Sec-Fetch-Site': 'same-origin'
+    };
+
+    if (anonId) {
+      headers['X-Anon-Id'] = anonId;
+    }
+
+    debugLog('📸 VINTED PHOTO UPLOAD: Uploading to', uploadEndpoint);
+    imageMeta.upload_started_at = Date.now();
+
+    // Step 5: Upload to Vinted
+    const uploadResponse = await fetch(uploadEndpoint, {
+      method: 'POST',
+      headers: headers,
+      body: formData
+    });
+
+    imageMeta.upload_completed_at = Date.now();
+    imageMeta.upload_duration_ms = imageMeta.upload_completed_at - imageMeta.upload_started_at;
+    imageMeta.response_status = uploadResponse.status;
+
+    debugLog('📸 VINTED PHOTO UPLOAD: Response status:', uploadResponse.status);
+
+    if (!uploadResponse.ok) {
+      const errorText = await uploadResponse.text();
+      debugLog('📸 VINTED PHOTO UPLOAD: Error response:', errorText);
+      imageMeta.error_response = errorText.substring(0, 500);
+      throw new Error(`Photo upload failed: HTTP ${uploadResponse.status} - ${errorText.substring(0, 200)}`);
+    }
+
+    const responseData = await uploadResponse.json();
+    debugLog('📸 VINTED PHOTO UPLOAD: Success! Photo ID:', responseData.id);
+
+    imageMeta.vinted_photo_id = responseData.id;
+    imageMeta.success = true;
+
+    return {
+      success: true,
+      photoId: responseData.id,
+      meta: imageMeta
+    };
+
+  } catch (error) {
+    debugLog('📸 VINTED PHOTO UPLOAD: Error:', error.message);
+    imageMeta.error = error.message;
+    imageMeta.success = false;
+
+    return {
+      success: false,
+      error: error.message,
+      meta: imageMeta
+    };
+  }
+}
+
+/**
+ * Get image dimensions from a blob
+ * Uses createImageBitmap for service worker compatibility (no DOM APIs)
+ * @param {Blob} blob - Image blob
+ * @returns {Promise<{width: number, height: number}>}
+ */
+async function getImageDimensions(blob) {
+  try {
+    const imageBitmap = await createImageBitmap(blob);
+    const dimensions = { width: imageBitmap.width, height: imageBitmap.height };
+    imageBitmap.close(); // Clean up
+    return dimensions;
+  } catch (error) {
+    throw new Error('Failed to load image for dimensions: ' + error.message);
+  }
+}
+
+/**
+ * Upload multiple images to Vinted sequentially
+ *
+ * @param {string[]} imageUrls - Array of image URLs to upload
+ * @param {string} baseUrl - Vinted base URL
+ * @param {string} cookieString - Cookie string
+ * @param {string} csrfToken - CSRF token
+ * @param {string} anonId - Anon ID (optional)
+ * @param {string} distortionLevel - Image distortion level
+ * @param {string|number} uid - User ID for telemetry
+ * @returns {Promise<{success: boolean, assignedPhotos?: Array, error?: string, failedIndex?: number, imagesMeta?: Array}>}
+ */
+async function uploadVintedPhotos(imageUrls, baseUrl, cookieString, csrfToken, anonId = null, distortionLevel = 'unchanged', uid = null) {
+  debugLog(`📸 VINTED PHOTOS: Uploading ${imageUrls.length} images...`);
+
+  const assignedPhotos = [];
+  const imagesMeta = []; // Collect metadata for all images
+  const uploadStartTime = Date.now();
+
+  for (let i = 0; i < imageUrls.length; i++) {
+    const imageUrl = imageUrls[i];
+    debugLog(`📸 VINTED PHOTOS: Uploading image ${i + 1}/${imageUrls.length}`);
+
+    const result = await uploadVintedPhoto(
+      imageUrl,
+      baseUrl,
+      cookieString,
+      csrfToken,
+      anonId,
+      distortionLevel
+    );
+
+    // Always collect metadata (even for failures)
+    if (result.meta) {
+      result.meta.image_index = i;
+      imagesMeta.push(result.meta);
+    }
+
+    if (!result.success) {
+      debugLog(`📸 VINTED PHOTOS: Failed at image ${i + 1}: ${result.error}`);
+
+      // Send telemetry for upload failure WITH full metadata
+      sendTelemetry('photo_upload_failed', {
+        image_index: i,
+        total_images: imageUrls.length,
+        error: result.error,
+        distortion_level: distortionLevel,
+        failed_image_meta: result.meta,
+        all_images_meta: imagesMeta,
+        total_duration_ms: Date.now() - uploadStartTime
+      }, uid);
+
+      return {
+        success: false,
+        error: `Failed to upload image ${i + 1}: ${result.error}`,
+        failedIndex: i,
+        failedImageMeta: result.meta,
+        imagesMeta: imagesMeta
+      };
+    }
+
+    assignedPhotos.push({
+      id: result.photoId,
+      orientation: 0,
+      meta: result.meta // Include meta with each photo for PHP callback
+    });
+
+    // Small delay between uploads to avoid rate limiting (0.5-1.5 seconds)
+    if (i < imageUrls.length - 1) {
+      const delay = 500 + Math.random() * 1000;
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+
+  const totalDurationMs = Date.now() - uploadStartTime;
+  debugLog(`📸 VINTED PHOTOS: All ${imageUrls.length} images uploaded successfully in ${totalDurationMs}ms`);
+
+  // Aggregate metadata for telemetry
+  const aggregateMeta = {
+    photo_count: imageUrls.length,
+    distortion_level: distortionLevel,
+    total_duration_ms: totalDurationMs,
+    avg_upload_duration_ms: Math.round(totalDurationMs / imageUrls.length),
+    total_original_size_kb: imagesMeta.reduce((sum, m) => sum + (m.original_size_kb || 0), 0),
+    total_upload_size_kb: imagesMeta.reduce((sum, m) => sum + (m.upload_size_kb || 0), 0),
+    photo_ids: assignedPhotos.map(p => p.id),
+    dimensions: imagesMeta.map(m => ({
+      index: m.image_index,
+      original: `${m.original_width || '?'}x${m.original_height || '?'}`,
+      processed: m.processed_width ? `${m.processed_width}x${m.processed_height}` : null,
+      size_kb: m.upload_size_kb,
+      mime: m.original_mime_type
+    }))
+  };
+
+  // Send telemetry for successful uploads WITH full metadata
+  sendTelemetry('photos_upload_success', aggregateMeta, uid);
+
+  return {
+    success: true,
+    assignedPhotos: assignedPhotos,
+    imagesMeta: imagesMeta,
+    aggregateMeta: aggregateMeta
+  };
+}
 
 // Function to extract Vinted tokens
 async function getVintedTokensViaContentScript(userIdentifier = "", baseUrl = null, isManualTrigger = false) {
@@ -1962,7 +2700,7 @@ async function getDepopTokensViaContentScript(userIdentifier = "") {
           target: { tabId: tabId },
           world: "MAIN", // Execute in main world to access page context
           func: () => {
-            console.log('🔧 Content script injected successfully into Depop page');
+            debugLog('🔧 Content script injected successfully into Depop page');
             // This function runs in the Depop page context
             function getCookie(name) {
               const value = `; ${document.cookie}`;
@@ -1973,14 +2711,14 @@ async function getDepopTokensViaContentScript(userIdentifier = "") {
 
             // Get all cookies from the page context
             const allCookies = document.cookie;
-            console.log('🔧 All cookies:', allCookies);
+            debugLog('🔧 All cookies:', allCookies);
             const accessToken = getCookie('access_token');
             const userId = getCookie('user_id');
 
-            console.log('🔧 DEPOP COOKIES FOUND:', allCookies.length, 'chars');
-            console.log('🔧 - access_token:', accessToken ? '[PRESENT]' : '[MISSING]');
-            console.log('🔧 - user_id:', userId ? '[PRESENT]' : '[MISSING]');
-            console.log('🔧 - Full cookie string:', allCookies.substring(0, 200) + '...');
+            debugLog('🔧 DEPOP COOKIES FOUND:', allCookies.length, 'chars');
+            debugLog('🔧 - access_token:', accessToken ? '[PRESENT]' : '[MISSING]');
+            debugLog('🔧 - user_id:', userId ? '[PRESENT]' : '[MISSING]');
+            debugLog('🔧 - Full cookie string:', allCookies.substring(0, 200) + '...');
 
             return {
               success: !!(accessToken && userId),
@@ -2054,6 +2792,192 @@ async function getDepopTokensViaContentScript(userIdentifier = "") {
     console.error('💥 Error extracting Depop tokens:', error);
     debugLog('🔧 Error details:', error);
     debugLog('🔧 Error stack:', error.stack);
+    console.groupEnd();
+    return { success: false, error: error.message };
+  }
+}
+
+// Facebook token extraction via content script
+// Updated 2025-12-28: Now extracts fb_dtsg from page HTML (REQUIRED for API calls)
+async function getFacebookTokensViaContentScript(userIdentifier = "") {
+  console.group('🔵 FACEBOOK TOKEN EXTRACTION');
+
+  try {
+    debugLog('🍪 Using chrome.cookies.getAll to extract Facebook cookies...');
+    const cookies = await chrome.cookies.getAll({ domain: '.facebook.com' });
+
+    if (cookies.length === 0) {
+      debugLog('❌ No Facebook cookies found - user not logged in');
+      console.groupEnd();
+      return {
+        success: false,
+        message: 'Not logged into Facebook. Please log in first.',
+        error: 'Not logged in'
+      };
+    }
+
+    debugLog(`🍪 Found ${cookies.length} Facebook cookies via chrome.cookies API`);
+
+    // Build cookie map
+    const cookieMap = {};
+    cookies.forEach(cookie => {
+      cookieMap[cookie.name] = cookie.value;
+    });
+
+    // Also get cookies from www.facebook.com specifically
+    const wwwCookies = await chrome.cookies.getAll({ url: 'https://www.facebook.com' });
+    wwwCookies.forEach(cookie => {
+      cookieMap[cookie.name] = cookie.value; // Override with www cookies
+    });
+
+    // Check for essential cookies (CONFIRMED MINIMUM: only c_user + xs needed)
+    const cUser = cookieMap['c_user'];
+    const xs = cookieMap['xs'];
+
+    debugLog('🔧 FACEBOOK COOKIES FOUND:');
+    debugLog('🔧 - c_user:', cUser ? '[PRESENT]' : '[MISSING]');
+    debugLog('🔧 - xs:', xs ? '[PRESENT]' : '[MISSING]');
+
+    if (!cUser) {
+      debugLog('❌ FACEBOOK FAIL: c_user cookie not found - user not logged in');
+      console.groupEnd();
+      return {
+        success: false,
+        message: 'Not logged into Facebook. Please log in first.',
+        error: 'c_user cookie missing'
+      };
+    }
+
+    if (!xs) {
+      debugLog('❌ FACEBOOK FAIL: xs cookie not found - session invalid');
+      console.groupEnd();
+      return {
+        success: false,
+        message: 'Facebook session expired. Please log in again.',
+        error: 'xs cookie missing'
+      };
+    }
+
+    // ============================================
+    // EXTRACT fb_dtsg FROM PAGE HTML (REQUIRED!)
+    // fb_dtsg is a CSRF token that expires quickly and is REQUIRED for all API calls
+    // ============================================
+    debugLog('🔑 Fetching fb_dtsg from Facebook page...');
+
+    let fb_dtsg = null;
+    try {
+      // Fetch a Facebook page to extract fb_dtsg from HTML
+      // Using marketplace/you/selling as it's a lightweight page
+      const fbPageResponse = await fetch('https://www.facebook.com/marketplace/you/selling', {
+        credentials: 'include',
+        headers: {
+          'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+          'accept-language': 'en-US,en;q=0.9',
+          'sec-fetch-dest': 'document',
+          'sec-fetch-mode': 'navigate',
+          'sec-fetch-site': 'same-origin',
+        }
+      });
+
+      if (fbPageResponse.ok) {
+        const fbHtml = await fbPageResponse.text();
+
+        // Try multiple regex patterns to extract fb_dtsg
+        // Pattern 1: DTSGInitialData format (most common)
+        let dtsgMatch = fbHtml.match(/"DTSGInitialData",\[\],\{"token":"([^"]+)"/);
+
+        // Pattern 2: Alternative DTSGInitialData format with whitespace
+        if (!dtsgMatch) {
+          dtsgMatch = fbHtml.match(/"DTSGInitialData",[\n\s]*\[[\n\s]*\][\n\s]*,[\n\s]*\{[\n\s]*"token":[\n\s]*"([^"]+)"/);
+        }
+
+        // Pattern 3: Direct fb_dtsg in form or script
+        if (!dtsgMatch) {
+          dtsgMatch = fbHtml.match(/name="fb_dtsg" value="([^"]+)"/);
+        }
+
+        // Pattern 4: JSON format in script
+        if (!dtsgMatch) {
+          dtsgMatch = fbHtml.match(/"fb_dtsg":\{"token":"([^"]+)"/);
+        }
+
+        if (dtsgMatch && dtsgMatch[1]) {
+          fb_dtsg = dtsgMatch[1];
+          debugLog('🔑 fb_dtsg extracted successfully:', fb_dtsg.substring(0, 20) + '...');
+        } else {
+          debugLog('⚠️ Could not find fb_dtsg in page HTML');
+        }
+      } else {
+        debugLog('⚠️ Failed to fetch Facebook page:', fbPageResponse.status);
+      }
+    } catch (dtsgError) {
+      debugLog('⚠️ Error extracting fb_dtsg:', dtsgError.message);
+    }
+
+    if (!fb_dtsg) {
+      debugLog('❌ FACEBOOK FAIL: fb_dtsg not found - cannot make API calls');
+      console.groupEnd();
+      return {
+        success: false,
+        message: 'Could not extract Facebook session token. Please refresh Facebook and try again.',
+        error: 'fb_dtsg not found'
+      };
+    }
+
+    // Prepare payload for the API (CONFIRMED MINIMUM - tested 2025-12-28)
+    // Only c_user, xs, and fb_dtsg are required
+    const cookiePayload = {
+      c_user: cUser,
+      xs: xs,
+      fb_dtsg: fb_dtsg  // CRITICAL: Required for all Facebook API calls
+    };
+
+    // Send to FC channels API
+    debugLog('📤 Sending Facebook credentials to FC channels API...');
+
+    const apiUrl = DEV_MODE
+      ? 'http://localhost:10008/wp-json/fc/channels/v1/facebook/connect'
+      : 'https://fluf.io/wp-json/fc/channels/v1/facebook/connect';
+
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        cookies: cookiePayload,
+        user_agent: navigator.userAgent,
+        device_type: 'desktop',
+        userIdentifier: userIdentifier
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      debugLog('❌ FACEBOOK API FAIL:', response.status, errorText);
+      console.groupEnd();
+      return {
+        success: false,
+        message: 'Failed to connect Facebook to FLUF',
+        error: errorText
+      };
+    }
+
+    const result = await response.json();
+    debugLog('✅ FACEBOOK SUCCESS:', result);
+
+    console.groupEnd();
+    return {
+      success: true,
+      message: result.message || 'Facebook connected successfully',
+      fb_user_id: cUser,
+      has_full_session: true,
+      has_fb_dtsg: true
+    };
+
+  } catch (error) {
+    console.error('💥 Error extracting Facebook tokens:', error);
+    debugLog('🔧 Error details:', error);
     console.groupEnd();
     return { success: false, error: error.message };
   }
@@ -2251,6 +3175,28 @@ function getTokenViaContentScript(sourceUrl = "", sendResponse = null, userIdent
   let allResults = [];
   let hasResponded = false;
 
+  // Helper to update popup status when both checks complete
+  function updatePopupStatus() {
+    const successfulResults = allResults.filter(r => r.success);
+    const failedResults = allResults.filter(r => !r.success);
+
+    if (successfulResults.length === 2) {
+      logStatus('Connected to Depop and Vinted', true);
+    } else if (successfulResults.length === 1) {
+      const successPlatform = successfulResults[0].platform;
+      const failedPlatform = failedResults[0]?.platform;
+      const failedReason = failedResults[0]?.error || 'Unknown error';
+      logStatus(`Connected to ${successPlatform}. ${failedPlatform}: ${failedReason}`, true);
+    } else {
+      // Both failed
+      const depopResult = allResults.find(r => r.platform === 'Depop');
+      const vintedResult = allResults.find(r => r.platform === 'Vinted');
+      const depopError = depopResult?.error || 'Not checked';
+      const vintedError = vintedResult?.error || 'Not checked';
+      logStatus(`Depop: ${depopError}. Vinted: ${vintedError}`, false);
+    }
+  }
+
   // Check Depop
     debugLog('🟡 Initiating Depop check...');
   getDepopTokensViaContentScript(userIdentifier).then((result) => {
@@ -2273,9 +3219,11 @@ function getTokenViaContentScript(sourceUrl = "", sendResponse = null, userIdent
         results: allResults,
         message: `Checked 2 platforms, ${successfulResults.length} successful`
       });
+      updatePopupStatus();
     } else if (completedChecks === 2) {
       debugLog(`🏁 Both checks complete: ${allResults.filter(r => r.success).length}/2 successful`);
       console.groupEnd();
+      updatePopupStatus();
     }
   }).catch((error) => {
     console.error('❌ Depop extraction failed:', error);
@@ -2292,9 +3240,11 @@ function getTokenViaContentScript(sourceUrl = "", sendResponse = null, userIdent
         results: allResults,
         message: `Checked 2 platforms, ${successfulResults.length} successful`
       });
+      updatePopupStatus();
     } else if (completedChecks === 2) {
       debugLog(`🏁 Both checks complete: ${allResults.filter(r => r.success).length}/2 successful`);
       console.groupEnd();
+      updatePopupStatus();
     }
   });
 
@@ -2320,9 +3270,11 @@ function getTokenViaContentScript(sourceUrl = "", sendResponse = null, userIdent
         results: allResults,
         message: `Checked 2 platforms, ${successfulResults.length} successful`
       });
+      updatePopupStatus();
     } else if (completedChecks === 2) {
       debugLog(`🏁 Both checks complete: ${allResults.filter(r => r.success).length}/2 successful`);
       console.groupEnd();
+      updatePopupStatus();
     }
   }).catch((error) => {
     console.error('❌ Vinted extraction failed:', error);
@@ -2339,9 +3291,11 @@ function getTokenViaContentScript(sourceUrl = "", sendResponse = null, userIdent
         results: allResults,
         message: `Checked 2 platforms, ${successfulResults.length} successful`
       });
+      updatePopupStatus();
     } else if (completedChecks === 2) {
       debugLog(`🏁 Both checks complete: ${allResults.filter(r => r.success).length}/2 successful`);
       console.groupEnd();
+      updatePopupStatus();
     }
   });
 }
@@ -2359,6 +3313,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     debugLog('⚠️  For channel-specific auth, use FCU_getTokenViaContentScript with channel parameter');
     getTokenViaContentScript();
     sendResponse({ message: "Check initiated" });
+
+  } else if (request.action === "FCU_getUserId") {
+    // Get the current user ID from storage (set during token sync)
+    chrome.storage.local.get("FCU_userId", (data) => {
+      sendResponse({ userId: data.FCU_userId || null });
+    });
+    return true; // Keep the message channel open for async response
+
+  } else if (request.action === "FCU_sendTelemetry") {
+    // Send telemetry event from popup
+    const eventType = request.eventType || 'popup_event';
+    const eventData = request.data || {};
+    sendTelemetry(eventType, eventData, eventData.uid || null);
+    sendResponse({ success: true });
+    return true;
 
   } else if (request.action === "checkExtension") {
     // Simple extension check - just respond that we're here
@@ -2506,11 +3475,50 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         
         throw errorResponse;
       });
+    } else if (channel === 'facebook') {
+      debugLog('🔵 Processing Facebook auth request');
+      debugLog('🔵 FACEBOOK ONLY: Will authenticate ONLY Facebook, not other platforms');
+
+      authPromise = getFacebookTokensViaContentScript(request.userIdentifier).then(result => {
+        debugLog('🔵 Facebook auth result:', result);
+        const response = {
+          success: result?.success || false,
+          error: result?.success ? null : (result?.message || result?.error || 'Unknown error'),
+          message: result?.success ? result?.message : null,
+          channel: 'facebook',
+          fb_user_id: result?.fb_user_id,
+          has_full_session: result?.has_full_session
+        };
+
+        // Clean up the active request on success
+        activeAuthRequests.delete(requestKey);
+
+        return response;
+      }).catch(error => {
+        console.error('🔵 Facebook auth error:', error);
+        const errorResponse = {
+          success: false,
+          error: error.message || 'Unknown error',
+          channel: 'facebook'
+        };
+
+        // Clean up the active request on error
+        activeAuthRequests.delete(requestKey);
+
+        throw errorResponse;
+      });
     } else {
       // Default to Depop
       debugLog('🟡 Processing Depop auth request');
       debugLog('🟡 DEPOP ONLY: Will authenticate ONLY Depop, not Vinted or other platforms');
-      
+
+      // Record frontend refresh timestamp and userIdentifier for alarm coordination
+      chrome.storage.local.set({
+        depop_last_frontend_refresh: Date.now(),
+        depop_last_user_identifier: request.userIdentifier || null
+      });
+      debugLog('🔔 DEPOP COORDINATION: Recorded frontend refresh timestamp and userIdentifier:', request.userIdentifier);
+
       authPromise = getDepopTokensViaContentScript(request.userIdentifier).then(result => {
         debugLog('🟡 Depop auth result:', result);
         const response = {
@@ -2652,26 +3660,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 // Function to handle Vinted listing creation
-async function handleVintedListingCreation(request) {
+// @param {Object} request - The listing request object
+// @param {number} retryAttempt - Current retry attempt (0 = first try, 1 = retry after auth refresh)
+async function handleVintedListingCreation(request, retryAttempt = 0) {
         // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/2ae7c98f-f398-47b3-80a8-fdb88173d4b9',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'FLUF Chrome Extension/background.js:2635',message:'FCU_VINTED_CREATE_LISTING request received',data:{request: request},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,C'})}).catch(()=>{});
+        fetch('http://127.0.0.1:7242/ingest/2ae7c98f-f398-47b3-80a8-fdb88173d4b9',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'FLUF Chrome Extension/background.js:2635',message:'FCU_VINTED_CREATE_LISTING request received',data:{request: request, retryAttempt: retryAttempt},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,C'})}).catch(()=>{});
         if (request.action === 'FCU_VINTED_CREATE_LISTING' && request.payload && request.payload.body && request.payload.body.item) {
           fetch('http://127.0.0.1:7242/ingest/2ae7c98f-f398-47b3-80a8-fdb88173d4b9',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'FLUF Chrome Extension/background.js:2639',message:'Assigned photos before listing',data:{assignedPhotos: request.payload.body.item.assigned_photos},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
         }
         // #endregion
   let listingStartTime = Date.now();
-  debugLog('🚀 VINTED LISTING: Starting listing creation process');
-  debugLog('📋 VINTED LISTING: Request data:', { fid: request.fid, vid: request.vid, uid: request.uid });
-  
+  const isRetry = retryAttempt > 0;
+  debugLog('🚀 VINTED LISTING: Starting listing creation process' + (isRetry ? ' (RETRY ATTEMPT)' : ''));
+  debugLog('📋 VINTED LISTING: Request data:', { fid: request.fid, vid: request.vid, uid: request.uid, retryAttempt });
+
   // Send telemetry immediately when listing request is received
   // This helps track if the extension receives requests but fails silently
-  sendTelemetry('listing_request_received', {
+  sendTelemetry(isRetry ? 'listing_retry_started' : 'listing_request_received', {
     fid: request.fid,
     vid: request.vid,
     source: request.source || 'manual',
     has_payload: !!request.payload,
     has_endpoint: !!request.endpoint,
-    has_headers: !!request.headers
+    has_headers: !!request.headers,
+    retry_attempt: retryAttempt
   }, request.uid);
   
   // Broadcast listing started to frontend
@@ -2780,17 +3792,87 @@ async function handleVintedListingCreation(request) {
     }
 
     // Check if we have access_token_web cookie
-    const hasAccessTokenWeb = cookieString.includes('access_token_web=');
+    let hasAccessTokenWeb = cookieString.includes('access_token_web=');
     debugLog('🔍 access_token_web check:', hasAccessTokenWeb ? '✅ PRESENT' : '❌ MISSING');
 
+    // AUTH RETRY: If access_token_web is missing, try once more with forced fresh cookie extraction
+    if (!hasAccessTokenWeb && retryAttempt < 1) {
+      debugLog('🔄 VINTED LISTING: access_token_web missing - attempting fresh cookie extraction...');
+
+      sendTelemetry('listing_initial_auth_retry_started', {
+        fid: fid,
+        vid: vid,
+        reason: 'access_token_web_missing_on_initial_check',
+        cookie_source: cookieSource,
+        original_cookie_count: cookieString ? cookieString.split(';').length : 0
+      }, uid);
+
+      try {
+        // Force fresh cookie extraction (bypass rate limits)
+        const freshCookieResult = await getVintedCookiesWithDevTools(baseUrl, true);
+
+        if (freshCookieResult.success && freshCookieResult.cookieString) {
+          cookieString = freshCookieResult.cookieString;
+          hasAccessTokenWeb = cookieString.includes('access_token_web=');
+
+          debugLog('🔍 VINTED LISTING: Fresh cookie extraction result - access_token_web:', hasAccessTokenWeb ? '✅ PRESENT' : '❌ STILL MISSING');
+
+          if (hasAccessTokenWeb) {
+            debugLog('✅ VINTED LISTING: Fresh cookies obtained with access_token_web - proceeding with listing');
+            cookieSource = 'extension_retry';
+
+            sendTelemetry('listing_initial_auth_retry_success', {
+              fid: fid,
+              vid: vid,
+              total_cookies: freshCookieResult.totalCookies || 0
+            }, uid);
+
+            // Also send fresh cookies to FC backend for persistence
+            try {
+              await sendVintedCookiesToFC(freshCookieResult.cookies || [], uid, baseUrl);
+              debugLog('✅ VINTED LISTING: Fresh cookies sent to FC backend for persistence');
+            } catch (fcError) {
+              debugLog('⚠️ VINTED LISTING: Failed to send cookies to FC (non-blocking):', fcError.message);
+            }
+          } else {
+            sendTelemetry('listing_initial_auth_retry_failed', {
+              fid: fid,
+              vid: vid,
+              reason: 'access_token_web_still_missing_after_extraction',
+              cookie_count: cookieString ? cookieString.split(';').length : 0
+            }, uid);
+          }
+        } else {
+          debugLog('❌ VINTED LISTING: Fresh cookie extraction failed:', freshCookieResult.message);
+
+          sendTelemetry('listing_initial_auth_retry_failed', {
+            fid: fid,
+            vid: vid,
+            reason: 'cookie_extraction_failed',
+            extraction_error: freshCookieResult.message
+          }, uid);
+        }
+      } catch (retryError) {
+        debugLog('❌ VINTED LISTING: Error during initial auth retry:', retryError.message);
+
+        sendTelemetry('listing_initial_auth_retry_error', {
+          fid: fid,
+          vid: vid,
+          error: retryError.message
+        }, uid);
+      }
+    }
+
+    // Final check after potential retry
     if (!hasAccessTokenWeb) {
       // Send telemetry for auth failure
       sendTelemetry('auth_error', {
         reason: 'access_token_web_missing',
         has_cookies: !!cookieString,
-        cookie_count: cookieString ? cookieString.split(';').length : 0
+        cookie_count: cookieString ? cookieString.split(';').length : 0,
+        did_attempt_retry: retryAttempt < 1
       }, uid);
-      
+
       // Broadcast auth error to user
       broadcastToFlufTabs('VINTED_LISTING_PROGRESS', {
         event: 'listing_error',
@@ -2800,15 +3882,21 @@ async function handleVintedListingCreation(request) {
         status: 'error',
         details: 'Please log into Vinted and click the FLUF extension to refresh your session.'
       });
-      
+
       throw new Error('Please ensure you are logged into Vinted.');
     }
 
     // Build the complete headers for the request using dynamic domain
     const originUrl = baseUrl.replace(/\/$/, ''); // Remove trailing slash
+
+    // Get client hints to make fetch look more like browser navigation
+    const clientHints = getClientHintHeaders();
+
     const requestHeaders = {
       'Cookie': cookieString,
       'User-Agent': navigator.userAgent,
+      // Client hints - makes fetch look more like real browser requests
+      ...clientHints,
       'Referer': `${originUrl}/items/new`,
       'Origin': originUrl,
       'Content-Type': 'application/json',
@@ -2820,6 +3908,8 @@ async function handleVintedListingCreation(request) {
       'Sec-Fetch-Mode': 'cors',
       'Sec-Fetch-Site': 'same-origin'
     };
+
+    debugLog('📋 VINTED LISTING: Request headers include client hints:', Object.keys(clientHints));
 
     // Add anon_id if provided
     if (headers && headers.anon_id) {
@@ -2833,6 +3923,132 @@ async function handleVintedListingCreation(request) {
       debugLog('🔐 VINTED LISTING: Added CSRF token from backend');
     } else {
       debugLog('⚠️ VINTED LISTING: No CSRF token provided - request may fail');
+    }
+
+    // ========================================================================
+    // IMAGE UPLOAD IN EXTENSION - Upload images if image_sources provided
+    // This ensures images are uploaded with the SAME session as listing creation
+    // ========================================================================
+    const imageSources = payload?.item?.image_sources || payload?.body?.item?.image_sources;
+    const distortionLevel = payload?.item?.distortion_level || payload?.body?.item?.distortion_level || 'unchanged';
+
+    if (imageSources && Array.isArray(imageSources) && imageSources.length > 0) {
+      debugLog(`📸 VINTED LISTING: Found ${imageSources.length} image sources - uploading in extension`);
+
+      // Send telemetry for image upload start
+      sendTelemetry('extension_image_upload_started', {
+        fid: fid,
+        vid: vid,
+        image_count: imageSources.length,
+        distortion_level: distortionLevel
+      }, uid);
+
+      // Broadcast progress to user
+      broadcastToFlufTabs('VINTED_LISTING_PROGRESS', {
+        event: 'listing_uploading_images',
+        vid: vid,
+        fid: fid,
+        message: `Uploading ${imageSources.length} images...`,
+        status: 'pending'
+      });
+
+      const csrfToken = headers?.csrf_token || requestHeaders['X-CSRF-token'];
+      const anonId = headers?.anon_id || requestHeaders['X-Anon-Id'];
+
+      const uploadResult = await uploadVintedPhotos(
+        imageSources,
+        baseUrl,
+        cookieString,
+        csrfToken,
+        anonId,
+        distortionLevel,
+        uid
+      );
+
+      // Store for PHP callback
+      request._imageUploadMeta = uploadResult.imagesMeta || [];
+      request._imageAggregateMeta = uploadResult.aggregateMeta || null;
+
+      if (!uploadResult.success) {
+        debugLog('❌ VINTED LISTING: Image upload failed:', uploadResult.error);
+
+        // Send telemetry for image upload failure WITH full metadata
+        sendTelemetry('extension_image_upload_failed', {
+          fid: fid,
+          vid: vid,
+          error: uploadResult.error,
+          failed_index: uploadResult.failedIndex,
+          // Include full metadata for pattern identification
+          failed_image_meta: uploadResult.failedImageMeta,
+          all_images_meta: uploadResult.imagesMeta,
+          aggregate: {
+            images_attempted: imageSources.length,
+            images_uploaded_before_failure: uploadResult.failedIndex || 0,
+            distortion_level: distortionLevel
+          }
+        }, uid);
+
+        // Broadcast image error to user
+        broadcastToFlufTabs('VINTED_LISTING_PROGRESS', {
+          event: 'listing_error',
+          vid: vid,
+          fid: fid,
+          message: 'Error uploading photo',
+          status: 'error',
+          details: uploadResult.error
+        });
+
+        throw new Error(`Image upload failed: ${uploadResult.error}`);
+      }
+
+      // Replace image_sources with uploaded assigned_photos in payload
+      // Strip meta from assigned_photos for Vinted API (it doesn't expect it)
+      const cleanAssignedPhotos = uploadResult.assignedPhotos.map(p => ({
+        id: p.id,
+        orientation: p.orientation || 0
+      }));
+
+      debugLog('✅ VINTED LISTING: Images uploaded, photo IDs:', cleanAssignedPhotos.map(p => p.id));
+
+      // Handle both payload structures (item at root or nested in body)
+      if (payload?.item) {
+        payload.item.assigned_photos = cleanAssignedPhotos;
+        delete payload.item.image_sources;
+        delete payload.item.distortion_level;
+      } else if (payload?.body?.item) {
+        payload.body.item.assigned_photos = cleanAssignedPhotos;
+        delete payload.body.item.image_sources;
+        delete payload.body.item.distortion_level;
+      }
+
+      // Send telemetry for successful image upload WITH full metadata
+      sendTelemetry('extension_image_upload_success', {
+        fid: fid,
+        vid: vid,
+        photo_ids: cleanAssignedPhotos.map(p => p.id),
+        distortion_level: distortionLevel,
+        // Include aggregate metadata for pattern identification
+        aggregate: uploadResult.aggregateMeta,
+        // Include individual image metadata
+        images_meta: uploadResult.imagesMeta?.map(m => ({
+          index: m.image_index,
+          original_size_kb: m.original_size_kb,
+          upload_size_kb: m.upload_size_kb,
+          original_dimensions: `${m.original_width || '?'}x${m.original_height || '?'}`,
+          mime_type: m.original_mime_type,
+          upload_duration_ms: m.upload_duration_ms,
+          vinted_photo_id: m.vinted_photo_id
+        }))
+      }, uid);
+
+      // Broadcast images uploaded
+      broadcastToFlufTabs('VINTED_LISTING_PROGRESS', {
+        event: 'listing_images_uploaded',
+        vid: vid,
+        fid: fid,
+        message: 'Images uploaded, creating listing...',
+        status: 'pending'
+      });
     }
 
     debugLog('📡 VINTED LISTING: Making request to:', endpoint);
@@ -2925,14 +4141,17 @@ async function handleVintedListingCreation(request) {
         details: 'Your item is now live on Vinted'
       });
 
-      // Send success callback to WordPress
+      // Send success callback to WordPress (with image metadata for diagnostics)
       const callbackResult = await sendVintedCallbackToWordPress({
         success: true,
         item_id: responseData.item.id,
         fid: fid,
         vid: vid,
         uid: uid,
-        source: source || 'manual' // Pass source (manual, autolist, relist) for relisting tracking
+        source: source || 'manual', // Pass source (manual, autolist, relist) for relisting tracking
+        // Include image upload metadata for PHP logging/diagnostics
+        image_upload_meta: request._imageUploadMeta || null,
+        image_aggregate_meta: request._imageAggregateMeta || null
       });
 
       // DUPLICATE PREVENTION: Log successful listing to prevent duplicates within 24 hours
@@ -2973,6 +4192,107 @@ async function handleVintedListingCreation(request) {
       };
     } else {
       debugLog('❌ VINTED LISTING: Failed with response:', responseData);
+
+      // ========================================================================
+      // ERROR 106 RETRY LOGIC - Attempt re-authentication for auth errors
+      // ========================================================================
+      const errorCode106 = responseData?.code || responseData?.error?.code;
+
+      if (isRetryableAuthError(responseData, response.status) && retryAttempt < MAX_AUTH_RETRY_ATTEMPTS) {
+        debugLog(`🔄 VINTED LISTING: Auth error detected (code ${errorCode106}), attempting re-authentication...`);
+
+        // Send telemetry for retry attempt
+        sendTelemetry('listing_auth_retry_started', {
+          fid: fid,
+          vid: vid,
+          error_code: errorCode106,
+          http_status: response.status,
+          retry_attempt: retryAttempt + 1,
+          original_error: responseData?.message || 'Auth error'
+        }, uid);
+
+        // Broadcast to user that we're refreshing
+        broadcastToFlufTabs('VINTED_LISTING_PROGRESS', {
+          event: 'listing_reauthenticating',
+          vid: vid,
+          fid: fid,
+          message: 'Session expired, refreshing...',
+          status: 'pending'
+        });
+
+        try {
+          // Force fresh cookie extraction (bypass rate limits for retry)
+          debugLog('🔄 VINTED LISTING: Forcing fresh cookie extraction...');
+          const freshCookieResult = await getVintedCookiesWithDevTools(baseUrl, true); // isManualTrigger=true bypasses rate limits
+
+          if (freshCookieResult.success && freshCookieResult.cookieString) {
+            debugLog('✅ VINTED LISTING: Re-authentication successful, retrying listing...');
+
+            // Send telemetry for successful re-auth
+            sendTelemetry('listing_auth_refresh_success', {
+              fid: fid,
+              vid: vid,
+              cookie_count: freshCookieResult.totalCookies || 0
+            }, uid);
+
+            // Persist fresh cookies to FC backend (fire-and-forget, don't block retry)
+            if (freshCookieResult.cookies && freshCookieResult.cookies.length > 0) {
+              sendVintedCookiesToFC(freshCookieResult.cookies, uid, baseUrl)
+                .then(success => {
+                  if (success) {
+                    debugLog('✅ VINTED LISTING: Fresh cookies persisted to FC backend during retry');
+                  } else {
+                    debugLog('⚠️ VINTED LISTING: Failed to persist fresh cookies to FC (non-blocking)');
+                  }
+                })
+                .catch(err => {
+                  debugLog('⚠️ VINTED LISTING: Error persisting fresh cookies to FC:', err.message);
+                });
+            }
+
+            // Small delay before retry to let session stabilize
+            await new Promise(resolve => setTimeout(resolve, AUTH_RETRY_DELAY_MS));
+
+            // Update request with fresh cookies for retry
+            request.cookies = freshCookieResult.cookieString;
+
+            // Broadcast retry starting
+            broadcastToFlufTabs('VINTED_LISTING_PROGRESS', {
+              event: 'listing_retrying',
+              vid: vid,
+              fid: fid,
+              message: 'Session refreshed, retrying...',
+              status: 'pending'
+            });
+
+            // Recursive retry with incremented attempt counter
+            return handleVintedListingCreation(request, retryAttempt + 1);
+          } else {
+            debugLog('❌ VINTED LISTING: Re-authentication failed:', freshCookieResult.message);
+
+            sendTelemetry('listing_auth_refresh_failed', {
+              fid: fid,
+              vid: vid,
+              reason: freshCookieResult.message || 'Cookie extraction failed',
+              has_cookies: !!freshCookieResult.cookies
+            }, uid);
+          }
+        } catch (reAuthError) {
+          debugLog('❌ VINTED LISTING: Re-authentication error:', reAuthError);
+
+          sendTelemetry('listing_auth_refresh_error', {
+            fid: fid,
+            vid: vid,
+            error: reAuthError.message
+          }, uid);
+        }
+
+        // If re-auth failed, fall through to normal error handling
+        debugLog('⚠️ VINTED LISTING: Re-authentication failed, proceeding with error handling');
+      }
+      // ========================================================================
+      // END ERROR 106 RETRY LOGIC
+      // ========================================================================
 
       // Extract error message
       let errorMessage = 'Failed to list on Vinted';
@@ -3060,7 +4380,7 @@ async function handleVintedListingCreation(request) {
         details: userFriendlyDetails
       });
 
-      // Send error callback to WordPress
+      // Send error callback to WordPress (with image metadata for diagnostics)
       await sendVintedCallbackToWordPress({
         success: false,
         location: 'else',
@@ -3072,6 +4392,9 @@ async function handleVintedListingCreation(request) {
         source: source || 'manual',
         response: responseData,
         body: payload,
+        // Include image upload metadata for PHP logging/diagnostics
+        image_upload_meta: request._imageUploadMeta || null,
+        image_aggregate_meta: request._imageAggregateMeta || null
       });
 
       return {
@@ -3085,7 +4408,7 @@ async function handleVintedListingCreation(request) {
   } catch (error) {
     console.error('💥 VINTED LISTING: Exception:', error);
 
-    // Send error callback to WordPress
+    // Send error callback to WordPress (with image metadata for diagnostics)
     await sendVintedCallbackToWordPress({
       success: false,
       location: 'try-catch',
@@ -3095,6 +4418,9 @@ async function handleVintedListingCreation(request) {
       uid: uid,
       source: source || 'manual',
       body: payload,
+      // Include image upload metadata for PHP logging/diagnostics
+      image_upload_meta: request._imageUploadMeta || null,
+      image_aggregate_meta: request._imageAggregateMeta || null
     });
 
     // Return error response instead of throwing to allow frontend to handle properly
@@ -3356,35 +4682,65 @@ function sendTokenToAPI(extractedData, sourceUrl = "", userIdentifier = "", send
 
       if (successfulResults.length > 0) {
         logStatus(`Data sent successfully`, true);
-        
+
+        // Store user ID from successful response for popup access
+        const responseData = successfulResults[0].data;
+
+        // CRITICAL: Only consider it a true success if backend confirms cookies were saved
+        // Backend returns {success: true, user_id: X} when cookies are actually persisted
+        // HTTP 200 alone doesn't guarantee save - must verify response content
+        const backendConfirmedSave = responseData && responseData.success === true && responseData.user_id;
+
+        if (responseData && responseData.user_id) {
+          chrome.storage.local.set({ 'FCU_userId': responseData.user_id });
+          debugLog('📱 POPUP: Stored user ID for popup:', responseData.user_id);
+        }
+
         // Detect if this is a token refresh (check if we previously had tokens for this user)
         const storageKey = `last_${channel}_auth_success_${userIdentifier || 'unknown'}`;
         chrome.storage.local.get([storageKey], async (stored) => {
           const lastSuccessTime = stored[storageKey];
           const now = Date.now();
           const isTokenRefresh = lastSuccessTime && (now - lastSuccessTime) < (30 * 24 * 60 * 60 * 1000); // Within 30 days
-          
-          // Store current success timestamp
-          chrome.storage.local.set({ [storageKey]: now });
-          
-          // Send telemetry for successful API submission
-          await sendTelemetry('vinted_auth_api_success', {
-            channel: channel,
-            user_identifier: userIdentifier || null,
-            base_url: baseUrl || sourceUrl,
-            endpoints_tried: results.length,
-            endpoints_succeeded: successfulResults.length,
-            is_token_refresh: isTokenRefresh,
-            time_since_last_auth_ms: lastSuccessTime ? (now - lastSuccessTime) : null
-          }, userIdentifier || null);
-          
-          // Send specific token refresh event if this is a refresh
-          if (isTokenRefresh && channel === 'vinted') {
-            await sendTelemetry('vinted_token_refresh', {
+
+          if (backendConfirmedSave) {
+            // Store current success timestamp only if backend confirmed save
+            chrome.storage.local.set({ [storageKey]: now });
+
+            // Send telemetry for successful API submission (backend confirmed save)
+            await sendTelemetry('vinted_auth_api_success', {
+              channel: channel,
               user_identifier: userIdentifier || null,
               base_url: baseUrl || sourceUrl,
-              time_since_last_auth_ms: now - lastSuccessTime,
-              time_since_last_auth_minutes: Math.round((now - lastSuccessTime) / (60 * 1000))
+              endpoints_tried: results.length,
+              endpoints_succeeded: successfulResults.length,
+              is_token_refresh: isTokenRefresh,
+              time_since_last_auth_ms: lastSuccessTime ? (now - lastSuccessTime) : null,
+              backend_confirmed_user_id: responseData.user_id
+            }, userIdentifier || null);
+
+            // Send specific token refresh event if this is a refresh
+            if (isTokenRefresh && channel === 'vinted') {
+              await sendTelemetry('vinted_token_refresh', {
+                user_identifier: userIdentifier || null,
+                base_url: baseUrl || sourceUrl,
+                time_since_last_auth_ms: now - lastSuccessTime,
+                time_since_last_auth_minutes: Math.round((now - lastSuccessTime) / (60 * 1000))
+              }, userIdentifier || null);
+            }
+          } else {
+            // HTTP 200 received but backend didn't confirm save - log partial failure
+            debugLog('⚠️ HTTP 200 but backend did not confirm cookie save:', responseData);
+            await sendTelemetry('vinted_auth_api_partial_failure', {
+              channel: channel,
+              user_identifier: userIdentifier || null,
+              base_url: baseUrl || sourceUrl,
+              endpoints_tried: results.length,
+              response_success: responseData?.success,
+              response_has_user_id: !!responseData?.user_id,
+              reason: !responseData ? 'empty_response' :
+                      responseData.success !== true ? 'success_not_true' :
+                      !responseData.user_id ? 'missing_user_id' : 'unknown'
             }, userIdentifier || null);
           }
         });

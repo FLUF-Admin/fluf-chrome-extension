@@ -19,9 +19,9 @@ TEMP_DIR="temp_build"
 STORE_DIR="store-build"
 RELEASES_DIR="releases"
 
-# Clean up previous builds
+# Clean up previous builds (preserve releases for version archiving)
 echo -e "${YELLOW}🧹 Cleaning up previous builds...${NC}"
-rm -rf "$TEMP_DIR" "$STORE_DIR" "$RELEASES_DIR" 2>/dev/null || true
+rm -rf "$TEMP_DIR" "$STORE_DIR" 2>/dev/null || true
 mkdir -p "$TEMP_DIR" "$STORE_DIR" "$RELEASES_DIR"
 
 # Check for required tools
@@ -34,7 +34,7 @@ fi
 # Create a temporary directory with the extension files
 echo -e "${YELLOW}📁 Copying extension files...${NC}"
 # Copy only the essential extension files, excluding build directories and temp
-cp background.js content.js manifest.json popup.html popup.js LICENSE "$TEMP_DIR/" 2>/dev/null || true
+cp background.js content.js manifest.json popup.html popup.js LICENSE icon.png dnr_rules.json "$TEMP_DIR/" 2>/dev/null || true
 cd "$TEMP_DIR"
 
 # Clean up any unwanted files that might have been copied
@@ -58,14 +58,24 @@ rm -rf \
     ".DS_Store" \
     "Thumbs.db" 2>/dev/null || true
 
-# Minify JavaScript files
+# Ensure DEV_MODE is false in background.js (safety check for production builds)
+echo -e "${YELLOW}🔒 Ensuring DEV_MODE is disabled for production...${NC}"
+if [ -f "background.js" ]; then
+    # Replace any DEV_MODE = true with DEV_MODE = false
+    sed -i '' 's/const DEV_MODE = true;/const DEV_MODE = false;/g' background.js
+    echo -e "${GREEN}  ✅ DEV_MODE set to false${NC}"
+fi
+
+# Minify JavaScript files (removes comments and debugLog calls)
 echo -e "${YELLOW}🔧 Minifying JavaScript files...${NC}"
+echo -e "${BLUE}  - Removing all comments${NC}"
+echo -e "${BLUE}  - Removing all debugLog() calls${NC}"
 
 # Minify background.js
 if [ -f "background.js" ]; then
     echo -e "${BLUE}  Minifying background.js...${NC}"
     terser background.js \
-        --compress \
+        --compress "pure_funcs=['debugLog'],drop_console=true" \
         --mangle \
         --output background.min.js \
         --comments false
@@ -77,7 +87,7 @@ fi
 if [ -f "content.js" ]; then
     echo -e "${BLUE}  Minifying content.js...${NC}"
     terser content.js \
-        --compress \
+        --compress "pure_funcs=['debugLog'],drop_console=true" \
         --mangle \
         --output content.min.js \
         --comments false
@@ -89,7 +99,7 @@ fi
 if [ -f "popup.js" ]; then
     echo -e "${BLUE}  Minifying popup.js...${NC}"
     terser popup.js \
-        --compress \
+        --compress "pure_funcs=['debugLog'],drop_console=true" \
         --mangle \
         --output popup.min.js \
         --comments false
@@ -152,6 +162,8 @@ echo -e "${GREEN}📁 Build directory: ${STORE_DIR}/${NC}"
 echo ""
 echo -e "${BLUE}📋 Package contents:${NC}"
 echo -e "${BLUE}  - Minified JavaScript files (no obfuscation)${NC}"
+echo -e "${BLUE}  - All debugLog() calls removed${NC}"
+echo -e "${BLUE}  - All comments stripped${NC}"
 echo -e "${BLUE}  - Minified HTML and CSS files${NC}"
 echo -e "${BLUE}  - Clean manifest.json${NC}"
 echo -e "${BLUE}  - No documentation or development files${NC}"

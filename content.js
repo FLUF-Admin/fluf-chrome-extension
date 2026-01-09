@@ -378,6 +378,11 @@ window.addEventListener('message', async function(event) {
                             type: 'FCU_GET_VINTED_SESSION_RESPONSE',
                             data: authResponse
                         }, '*');
+                    } else if (channel === 'facebook') {
+                        window.postMessage({
+                            type: 'FCU_GET_FACEBOOK_SESSION_RESPONSE',
+                            data: authResponse
+                        }, '*');
                     }
                 });
             } catch (error) {
@@ -413,6 +418,11 @@ window.addEventListener('message', async function(event) {
                         type: 'FCU_GET_VINTED_SESSION_RESPONSE',
                         data: errorResponse
                     }, '*');
+                } else if (channel === 'facebook') {
+                    window.postMessage({
+                        type: 'FCU_GET_FACEBOOK_SESSION_RESPONSE',
+                        data: errorResponse
+                    }, '*');
                 }
             }
         } else {
@@ -446,6 +456,11 @@ window.addEventListener('message', async function(event) {
             } else if (channel === 'vinted') {
                 window.postMessage({
                     type: 'FCU_GET_VINTED_SESSION_RESPONSE',
+                    data: errorResponse
+                }, '*');
+            } else if (channel === 'facebook') {
+                window.postMessage({
+                    type: 'FCU_GET_FACEBOOK_SESSION_RESPONSE',
                     data: errorResponse
                 }, '*');
             }
