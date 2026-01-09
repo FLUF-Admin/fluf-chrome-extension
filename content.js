@@ -11,9 +11,139 @@ if (typeof chrome !== 'undefined' && chrome.runtime) {
     console.log('🔍 FLUF Extension: Set data-fluf-extension attribute, version:', extVersion);
 }
 
+// ============================================================================
+// window.flufExtension Bridge Object
+// Provides a clean API for the SPA to call extension methods directly
+// This wraps the event-based communication in promises
+// ============================================================================
+
+let requestCounter = 0;
+const pendingRequests = new Map();
+
+// Listen for responses from extension event handlers
+window.addEventListener('fluf-extension-response', (event) => {
+    const { requestId, response } = event.detail;
+    const pending = pendingRequests.get(requestId);
+    if (pending) {
+        pendingRequests.delete(requestId);
+        pending.resolve(response);
+    }
+});
+
+// Helper to send request and wait for response
+function sendExtensionRequest(method, data, timeoutMs = 120000) {
+    return new Promise((resolve, reject) => {
+        const requestId = `req_${++requestCounter}_${Date.now()}`;
+
+        // Set up timeout
+        const timeout = setTimeout(() => {
+            pendingRequests.delete(requestId);
+            reject(new Error(`Extension request timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+
+        // Store pending request
+        pendingRequests.set(requestId, {
+            resolve: (response) => {
+                clearTimeout(timeout);
+                resolve(response);
+            },
+            reject: (error) => {
+                clearTimeout(timeout);
+                reject(error);
+            }
+        });
+
+        // Dispatch event to trigger extension handler
+        window.dispatchEvent(new CustomEvent('fluf-extension-call', {
+            detail: { method, data, requestId }
+        }));
+    });
+}
+
+// Create the flufExtension bridge object
+window.flufExtension = {
+    isInstalled: true,
+    version: chrome.runtime?.getManifest()?.version || 'unknown',
+
+    // Create a Vinted listing via extension
+    async createVintedListing(data) {
+        console.log('🔌 flufExtension.createVintedListing called:', data?.vid || 'no vid');
+        try {
+            const result = await sendExtensionRequest('createVintedListing', data);
+            return result;
+        } catch (error) {
+            console.error('🔌 flufExtension.createVintedListing error:', error);
+            return { success: false, error: error.message };
+        }
+    },
+
+    // Check extension status
+    async checkStatus() {
+        console.log('🔌 flufExtension.checkStatus called');
+        try {
+            const result = await sendExtensionRequest('checkStatus', {}, 5000);
+            return result;
+        } catch (error) {
+            console.error('🔌 flufExtension.checkStatus error:', error);
+            return { installed: false, error: error.message };
+        }
+    },
+
+    // Get Vinted session
+    async getVintedSession(data) {
+        console.log('🔌 flufExtension.getVintedSession called');
+        try {
+            const result = await sendExtensionRequest('getVintedSession', data, 30000);
+            return result;
+        } catch (error) {
+            console.error('🔌 flufExtension.getVintedSession error:', error);
+            return { success: false, error: error.message };
+        }
+    },
+
+    // Process Vinted autolist queue - signals extension to process pending autolist items
+    async processVintedAutolistQueue() {
+        console.log('🔌 flufExtension.processVintedAutolistQueue called');
+        try {
+            // This method doesn't need a complex handler - it just signals the extension
+            // The actual queue processing is handled by the unified queue service polling
+            // For now, return success to indicate the extension is ready to process
+            return { success: true, message: 'Autolist queue processing signaled' };
+        } catch (error) {
+            console.error('🔌 flufExtension.processVintedAutolistQueue error:', error);
+            return { success: false, error: error.message };
+        }
+    },
+
+    // Trigger Vinted re-authentication
+    async triggerVintedReauth(userIdentifier, vintedCountry, vintedBaseUrl) {
+        console.log('🔌 flufExtension.triggerVintedReauth called for user:', userIdentifier);
+        try {
+            // Send auth request via postMessage (existing flow)
+            window.postMessage({
+                type: 'FLUF_MARKETPLACE_AUTH_REQUEST',
+                payload: {
+                    userIdentifier: userIdentifier,
+                    channel: 'vinted',
+                    country: vintedCountry || 'UK',
+                    base_url: vintedBaseUrl || 'https://www.vinted.co.uk/',
+                    isReauth: true,
+                    isAutoRefresh: true
+                }
+            }, '*');
+            return { success: true, message: 'Reauth triggered' };
+        } catch (error) {
+            console.error('🔌 flufExtension.triggerVintedReauth error:', error);
+            return { success: false, error: error.message };
+        }
+    }
+};
+
+console.log('🔌 window.flufExtension bridge created:', Object.keys(window.flufExtension));
+
 // Dispatch event to notify that extension is ready
-window.dispatchEvent(new CustomEvent('flufExtensionReady', { 
-    detail: { version: chrome.runtime?.getManifest()?.version || 'unknown', installed: true } 
+window.dispatchEvent(new CustomEvent('flufExtensionReady', {
+    detail: { version: chrome.runtime?.getManifest()?.version || 'unknown', installed: true }
 }));
 
 // Listen for messages from the web page

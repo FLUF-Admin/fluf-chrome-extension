@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FLUF Connect Utility Extension",
-  "version": "1.8.5",
+  "version": "1.8.6",
   "description": "Supports the functionality of FLUF Connect (fluf.io/connect)",
   "permissions": [
     "alarms",
@@ -49,6 +49,7 @@
     "*://*.vinted.ro/*",
     "*://*.vinted.se/*",
     "*://*.vinted.sk/*",
+    "*://*.vinted.net/*",
     "http://localhost/*",
     "http://fluf.local/*"
   ],
